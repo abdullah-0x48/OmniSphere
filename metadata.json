@@ -1,0 +1,6 @@
+{
+  "name": "OmniSphere – Industrial IoT Device Lifecycle and Management Platform",
+  "description": "Multi-tenant Industrial IoT device lifecycle, monitoring, firmware, alerting, and maintenance management platform.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

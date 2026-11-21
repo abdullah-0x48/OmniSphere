@@ -1,0 +1,585 @@
+# ROLE
+
+You are a principal full-stack engineer, solution architect, and UI/UX designer. Build a complete, working, professional web application named **OmniSphere – Industrial IoT Device Lifecycle and Management Platform**.
+
+Read this entire specification before writing any code. It is the single source of truth. Requirement IDs (FR-xxx-nn, NFR-nn), use case IDs (UC-nn), role codes, state names, and enum values must be used exactly as written here.
+
+# 0. WORKING RULES (MANDATORY)
+
+1. Build in 8 milestones (section 17). In this first response implement **Milestone 1 only**, then stop. After each milestone I will test it and send "Continue with Milestone N".
+2. Every screen, button, form, and filter you create must work end to end against real persistence and real APIs. No placeholder pages, no "coming soon", no dead buttons, no hard-coded fake data inside components. Demo data is created only by the seed function in section 15.
+3. After each milestone the app must compile, start, and run without console errors. End each response with: (a) what was built, (b) how to test it in 5 to 8 steps, (c) known limitations. Keep that summary short.
+4. Do not add features that are not in this spec. Do not drop any feature that is in this spec. If a platform limitation prevents something, choose the closest approach that works, use it consistently, and state the deviation in one sentence.
+5. Code quality: TypeScript with strict mode everywhere, modular files (no file over about 400 lines), zod validation on every API input, one consistent error format (section 7), meaningful comments on business rules, and no dead code.
+6. Never hard-code secrets, never log secrets, never send API keys, key hashes, or password hashes to the browser.
+7. Use English for the whole UI. Store all timestamps in UTC (ISO 8601) and display them in the user's local browser time.
+8. Prefer boring, reliable solutions over clever ones. Simple and complete beats complex and half-working.
+
+# 1. PRODUCT OVERVIEW
+
+OmniSphere is a web-based, multi-tenant platform that lets an Industrial IoT (IIoT) **service provider** manage the full lifecycle of connected industrial devices for many **client organizations (tenants)** from one system: registration, configuration, monitoring, firmware updates, maintenance, and decommissioning.
+
+Two groups of people use it:
+
+- **Provider employees** (Platform Admin, Support/NOC Engineer, Field Technician) operate and maintain device fleets on behalf of clients.
+- **Client staff** (Client Admin, Client Manager, Client Operator) see and control only their own organization's devices, raise service requests, approve downtime, and follow reports.
+
+**Devices** send heartbeats and telemetry over an HTTPS REST **device API** and poll that API for commands (configuration, firmware update, restart). Real hardware is not available, so devices are realized by a built-in **Device Simulator** (section 12) that uses the same public device API.
+
+**Primary goal:** a unified platform that improves visibility, operational efficiency, reliability, and long-term management of industrial IoT infrastructure.
+
+**Phase 1 (build now):** every requirement marked M (Must) or S (Should) in section 9.
+**Phase 2 (do NOT build, but do not block):** MQTT ingestion, staged/canary rollouts, TOTP multi-factor authentication, weekly summary emails, webhooks, custom roles, hourly telemetry aggregates.
+**Out of scope:** billing and payments, native mobile apps (responsive web only), SMS, X.509 certificate authority and mutual TLS, PLC or hard real-time control, machine-learning predictive maintenance, multi-region deployment.
+
+# 2. ACTORS, ROLES, AND PERMISSIONS
+
+## 2.1 Role codes
+
+| Code | Label | Organization | Data scope |
+|---|---|---|---|
+| `PLATFORM_ADMIN` | Platform Admin (PA) | Provider | All tenants |
+| `SUPPORT_ENGINEER` | Support / NOC Engineer (SE) | Provider | Only tenants assigned to this user |
+| `FIELD_TECHNICIAN` | Field Technician (FT) | Provider | Only work orders assigned to this user, and the devices/tickets linked to them (read-only) |
+| `CLIENT_ADMIN` | Client Admin (CA) | Client | Own tenant only |
+| `CLIENT_MANAGER` | Client Manager (CM) | Client | Own tenant only |
+| `CLIENT_OPERATOR` | Client Operator (CO) | Client | Own tenant only |
+
+System actors: **IIoT Edge Device** (primary actor for telemetry, secondary for registration, configuration, and OTA) and **Email Notification Service** (secondary actor).
+
+## 2.2 Permission matrix (enforce on every API endpoint AND hide in the UI)
+
+Legend: **●** allowed within the role's data scope, **○** view only or limited scope, **–** no access.
+
+| Capability (use case) | PA | SE | FT | CA | CM | CO |
+|---|---|---|---|---|---|---|
+| Manage client organizations (UC-02) | ● | – | – | – | – | – |
+| Manage users and roles (UC-03) | ● | – | – | ● | – | – |
+| Register devices (UC-04) | – | ● | – | ● | – | – |
+| Configure devices and change lifecycle state (UC-05) | – | ● | ○ | ● | ○ | ○ |
+| Decommission device (UC-17) | – | – | – | ● | – | – |
+| Monitor fleet and telemetry (UC-06) | ○ | ● | ○ | ● | ● | ● |
+| Configure alert rules (UC-08) | – | ● | – | ● | ○ | ○ |
+| Acknowledge alerts and handle tickets (UC-09) | – | ● | – | ● | ○ | ● |
+| Raise and track service requests (UC-10) | – | ● | ○ | ● | ● | ● |
+| Manage firmware repository (UC-11) | ● | ● | – | – | – | – |
+| Create and cancel rollouts (UC-12) | – | ● | – | ● | – | – |
+| Approve rollouts (UC-12) | – | – | – | – | ● | – |
+| Schedule maintenance and assign work orders (UC-13) | – | ● | – | ○ | – | ○ |
+| Approve maintenance windows (UC-13) | – | – | – | – | ● | – |
+| Execute and log work orders (UC-14) | – | ○ | ● | ○ | ○ | ○ |
+| Reports and exports (UC-15) | ● | ● | – | ● | ● | ○ |
+| Audit log (UC-16) | ● | – | – | ○ | – | – |
+
+Notes: approving rollouts and maintenance windows belongs to CM only (separation of duties). PA's monitoring access is platform-level (platform health, tenant list, counts), not per-device operations. "○" for FT on device configuration means read-only device detail for devices linked to their work orders.
+
+## 2.3 Tenant isolation (critical)
+
+- Every tenant-owned record has `tenantId`. Cross-tenant access must be impossible, not merely hidden.
+- Enforce tenant scope in ONE place: a `TenantContext` object `{ userId, role, tenantIds[] }` is built by auth middleware and is a required argument of every repository method. Repositories always add the tenant filter themselves. Controllers never build raw queries.
+- A request for another tenant's record returns **404** (not 403) so existence is not leaked. A forbidden action inside an accessible tenant returns **403**.
+- A suspended tenant: its users cannot log in (message "Organization suspended"), and its devices are rejected by the device API with 403.
+
+# 3. TECHNOLOGY AND ARCHITECTURE
+
+Use the stack that AI Studio Build supports natively. Keep UI logic in the client and all business logic and data access on the server.
+
+- **Client:** React 18 + TypeScript + Vite, React Router, Tailwind CSS, Recharts (charts), lucide-react (icons), TanStack Query (data fetching, 5-second polling), react-hook-form + zod (forms), date-fns.
+- **Server:** Node.js + Express + TypeScript. One origin: the Express server serves the built client and exposes `/api/v1/*` (web API) and `/device/v1/*` (device API). No CORS configuration should be needed.
+- **Database:** Cloud Firestore through AI Studio's Firebase integration, accessed **only from server-side repositories**. If the server runtime cannot reach Firestore in this environment, fall back to SQLite (`better-sqlite3`) behind the same repository interfaces and say so in one sentence. Business code must never import a database SDK directly.
+- **Authentication:** custom email and password authentication on the server (see 8.1). Store users in the `users` collection. If the platform forces Firebase Authentication, use it only for sign-in and keep roles and tenant assignments in `users`.
+- **Session token:** JWT sent in the `Authorization: Bearer` header. Keep it in memory and mirror it to `sessionStorage` inside try/catch. Do NOT rely on cookies because the preview runs inside an iframe.
+- **Email:** `nodemailer` using the `SMTP_*` secrets. If they are missing, run in "outbox-only" mode: every email is stored in the `emailOutbox` collection, shown on an Email Outbox page, and marked SENT in a simulated way.
+- **Firmware files:** metadata in Firestore, binary in the server file store (`./data/firmware/<id>.bin`), or Firebase Storage if the integration provides it. Maximum upload size 5 MB.
+- **API docs:** serve an OpenAPI document at `/api/v1/openapi.json` and Swagger UI at `/api/docs`.
+- **Deployment:** the app must run with one start command and be deployable to Cloud Run from AI Studio. Write a `README.md` (section 18).
+
+## 3.1 Folder structure
+
+```
+/client                  React app
+/server
+  /src
+    /api                 route files per module (auth, tenants, users, sites, deviceModels, devices,
+                         configProfiles, firmware, rollouts, alertRules, alerts, notifications,
+                         tickets, workOrders, maintenancePlans, reports, audit, simulator)
+    /deviceApi           routes mounted at /device/v1
+    /services            business logic, one file per module
+    /repositories        the ONLY code that touches the database; all methods take TenantContext
+    /jobs                background jobs (section 8.9)
+    /middleware          auth, rbac, validate, errorHandler, rateLimit
+    /simulator           in-process simulator manager
+    /seed                demo data (section 15)
+  /tests                 unit tests (section 16)
+/simulator               standalone CLI simulator (section 12)
+/docs                    README, API notes
+```
+
+## 3.2 Telemetry storage (design for free-tier quotas)
+
+Telemetry is high volume, so do NOT write one database document per message.
+
+- Keep an in-memory `LiveState` map per device: `lastSeenAt`, `connectivity`, `latestMetrics`, `latestHealth`. Rebuild it from the database at server start. Dashboards read live values from `LiveState` through lightweight endpoints, not from the database.
+- Buffer incoming samples in memory per device. Every 60 seconds a flusher writes **one document per device per 10-minute bucket**: collection `telemetryBuckets`, document id `{deviceId}_{yyyyMMddHHmm of bucket start}`, fields `tenantId, deviceId, bucketStart, samples[] { ts, metrics{}, health{} }`. Merge the new samples into the bucket document in a single write.
+- Persist `lastSeenAt` on the device document at most once every 60 seconds. Write the device document immediately only on state, connectivity, firmware, or config changes.
+- History endpoints read the buckets for the requested range and down-sample on the server to at most 300 points (average per window).
+- A daily retention job deletes buckets older than `TELEMETRY_RETENTION_DAYS` (default 90).
+
+# 4. DATA MODEL
+
+Use these collections and fields. Add `createdAt` and `updatedAt` (UTC ISO strings) to every record. IDs are strings (use nanoid with a readable prefix, for example `ten_`, `usr_`, `dev_`). Where a human-friendly number is shown (tickets, work orders), keep a counter document and format it as `TKT-0001`, `WO-0001`.
+
+**tenants:** `id, name, code (unique, 2-6 uppercase letters), status ACTIVE|SUSPENDED, contactEmail, settings { heartbeatIntervalSec (default 30), offlineAfterMissedIntervals (default 3), criticalAckMinutes (default 15), requireRolloutApproval (default false), requireMaintenanceApproval (default true) }`.
+
+**users:** `id, email (unique, lowercase), name, role (role code), tenantId (null for PA and provider staff), assignedTenantIds[] (SE and FT only), isSupervisor (SE only, default false), status ACTIVE|INACTIVE, passwordHash (bcryptjs), failedLogins, lockedUntil, passwordResetTokenHash, passwordResetExpiresAt, lastLoginAt`.
+
+**sites:** `id, tenantId, name, location` (unique name per tenant).
+
+**deviceModels:** `id, name, manufacturer, hardwareRevision, metrics[] { key, label, type number|boolean|string, unit, min, max }, supportedFirmwareFamily` (global, managed by PA and SE).
+
+**devices:** `id, tenantId, siteId, modelId, name, serialNumber, hardwareId (MAC or IMEI), tags[], state, connectivity ONLINE|OFFLINE|UNKNOWN, lastSeenAt, firmwareVersion, apiKeyHash, apiKeyLast4, config { profileId, version, status NONE|PENDING|APPLIED|FAILED, error }, latestMetrics{}, latestHealth{}, decommissionedAt, decommissionReason`. Enforce platform-wide uniqueness of `serialNumber` and `hardwareId` with a `uniqueKeys` collection written in the same transaction as the device (document id `serial:{value}` and `hw:{value}`).
+
+**deviceStateHistory:** `id, tenantId, deviceId, from, to, reason, actorId (or SYSTEM), at`.
+**connectivityEvents:** `id, tenantId, deviceId, state ONLINE|OFFLINE, at` (written only when connectivity changes; used for availability KPIs).
+**deviceCommands:** `id, tenantId, deviceId, type APPLY_CONFIG|RESTART, payload, status PENDING|DELIVERED|ACKED|FAILED, createdBy, deliveredAt, ackedAt`.
+
+**configProfiles:** `id, tenantId, modelId, name, version (integer, increments on every edit; keep old versions), payload (JSON object), createdBy`.
+
+**firmwarePackages (global):** `id, modelId, version (semver), releaseNotes, checksumSha256, sizeBytes, fileRef, status DRAFT|RELEASED|WITHDRAWN, uploadedBy`. Unique per `modelId + version`.
+
+**rollouts:** `id, tenantId, firmwareId, modelId, targetType DEVICE|TAG|SITE, targetValue, scheduledAt (null = start immediately after approval), status PENDING_APPROVAL|PENDING|RUNNING|COMPLETED|REJECTED|CANCELLED, createdBy, decidedBy, decisionReason, counts { total, verified, failed, cancelled }`.
+**rolloutJobs:** `id, tenantId, rolloutId, deviceId, fromVersion, toVersion, status QUEUED|DOWNLOADING|INSTALLING|VERIFIED|FAILED|CANCELLED, errorCode, updatedAt`.
+
+**alertRules:** `id, tenantId, name, kind THRESHOLD|OFFLINE, metricKey (a model metric key or a health key: cpuLoad, memoryUsage, batteryLevel, signalStrength), operator GT|GTE|LT|LTE, threshold, durationSec, severity WARNING|CRITICAL, scopeType DEVICE|MODEL|SITE, scopeId, recipients[] { type ROLE|USER, role|userId }, enabled`.
+**alerts:** `id, tenantId, ruleId, deviceId, severity, status OPEN|ACKNOWLEDGED|CLOSED, message, snapshot{}, acknowledgedBy, acknowledgedAt, ticketId, escalationLevel (0,1,2), escalatedAt, emailDeliveryFailed, closedAt`.
+**notifications (in-app):** `id, tenantId, userId, type, title, body, link, read, createdAt`.
+**emailOutbox:** `id, tenantId, to, subject, body, status QUEUED|SENT|FAILED, attempts, nextAttemptAt, lastError, relatedType, relatedId`.
+
+**tickets:** `id, number, tenantId, deviceId (optional), siteId (optional), source ALERT|SERVICE_REQUEST|MANUAL, alertId, title, description, priority LOW|MEDIUM|HIGH|CRITICAL, status OPEN|IN_PROGRESS|WAITING_ON_CLIENT|RESOLVED|CLOSED, assigneeId, createdBy, rootCause, resolutionNotes, resolvedAt, closedAt, comments[] { id, authorId, authorRole, body, at }`.
+**workOrders:** `id, number, tenantId, deviceId, ticketId (optional), type CORRECTIVE|PREVENTIVE, title, instructions, checklist[] { text, done }, assignedTo, plannedStart, plannedEnd, downtimeRequired, approvalStatus NOT_REQUIRED|PENDING|APPROVED|REJECTED, approvalNote, status PLANNED|ASSIGNED|IN_PROGRESS|COMPLETED|CANCELLED, startedAt, completedAt, completion { actionsTaken, partsReplaced[], notes, timeSpentMin, outcome SUCCESS|PARTIAL|FAILED }`.
+**maintenancePlans:** `id, tenantId, name, scopeType DEVICE|TAG|SITE, scopeValue, everyDays, nextRunAt, template { title, instructions, checklist[] , downtimeRequired }, assignedTo (optional), enabled`.
+
+**auditLogs (append-only):** `id, at, actorId, actorRole, tenantId, action, targetType, targetId, outcome SUCCESS|FAILURE, ip, details{}`. The application exposes NO update or delete operation for this collection. Add Firestore security rules (or equivalent) that deny update and delete.
+
+**counters:** `id, value` (for ticket and work order numbers).
+
+# 5. STATE MACHINES AND ENUM RULES
+
+## 5.1 Device lifecycle (FR-LCM-01)
+
+States: `PROVISIONED, ACTIVE, UNDER_MAINTENANCE, SUSPENDED, DECOMMISSIONED`.
+
+| From | To | Trigger | Who |
+|---|---|---|---|
+| (new) | PROVISIONED | Registration | CA, SE |
+| PROVISIONED | ACTIVE | First successful device handshake | System |
+| ACTIVE | UNDER_MAINTENANCE | Work order started, or manual | System, SE, CA |
+| UNDER_MAINTENANCE | ACTIVE | Work order completed, or manual | System, SE, CA |
+| ACTIVE | SUSPENDED | Suspend (reason required) | SE, CA |
+| SUSPENDED | ACTIVE | Resume | SE, CA |
+| PROVISIONED, ACTIVE, UNDER_MAINTENANCE, SUSPENDED | DECOMMISSIONED | Decommission (reason required, confirmation dialog) | CA only |
+| DECOMMISSIONED | (none) | Terminal state | |
+
+Any other transition returns 409 with the allowed transitions. Every change writes a `deviceStateHistory` row and an audit entry. Decommissioning revokes the API key (clear `apiKeyHash`), cancels queued rollout jobs and pending commands, and keeps all history read-only.
+
+## 5.2 Connectivity (FR-MON-01)
+
+Only two connectivity states are used: `ONLINE` and `OFFLINE` (plus `UNKNOWN` before the first heartbeat). A device is OFFLINE when no heartbeat or telemetry arrived for `offlineAfterMissedIntervals x heartbeatIntervalSec` seconds (default 3 x 30 = 90 s). Health problems (for example high CPU) are NOT a connectivity state; they are raised through alert rules.
+
+## 5.3 Other status flows
+
+- **Alert:** OPEN, then ACKNOWLEDGED, then CLOSED. An alert stays open until it is acknowledged and the linked ticket is closed (or an SE closes it manually with a reason). It does NOT auto-close when the metric returns to normal.
+- **Ticket:** OPEN, IN_PROGRESS, WAITING_ON_CLIENT, RESOLVED, CLOSED. RESOLVED requires `rootCause` and `resolutionNotes`. A client user (CO or CA) can Confirm (RESOLVED to CLOSED) or Reopen (RESOLVED to IN_PROGRESS). An SE may close a RESOLVED ticket directly if the client does not respond (audited with reason).
+- **Rollout:** PENDING_APPROVAL (only when `requireRolloutApproval` is true), PENDING, RUNNING, COMPLETED, REJECTED, CANCELLED. COMPLETED when all jobs are terminal (VERIFIED, FAILED, or CANCELLED).
+- **Rollout job:** QUEUED, DOWNLOADING, INSTALLING, VERIFIED, FAILED, CANCELLED. There is no Expired state: a job for an offline device simply stays QUEUED until the device polls or the owner cancels it.
+- **Firmware package:** DRAFT, RELEASED, WITHDRAWN. Only RELEASED packages can be rolled out.
+- **Work order:** PLANNED, ASSIGNED, IN_PROGRESS, COMPLETED, CANCELLED. If `downtimeRequired` and the tenant has `requireMaintenanceApproval`, `approvalStatus` starts as PENDING and an FT cannot start the work order until it is APPROVED. If a CM rejects, the SE must change the window or details, which resets approval to PENDING.
+
+# 6. DEVICE API (`/device/v1`) - used by real devices and by the simulator
+
+Authentication on every endpoint: headers `X-Device-Id: <deviceId>` and `X-API-Key: <apiKey>`. The server hashes the key with SHA-256 and compares it in constant time to `apiKeyHash`. API keys look like `omk_` + 32 random bytes in base64url and are shown to the user exactly once.
+
+Rejections: unknown device or wrong key returns **401**; device `SUSPENDED` or `DECOMMISSIONED`, or tenant `SUSPENDED`, returns **403**; invalid payload returns **400** with `{ error, details[] }`. Count invalid payloads per device (shown on device detail). Write a rate-limited `DEVICE_AUTH_FAILED` audit entry (at most one per device ID per 5 minutes) for failed authentications.
+
+| Method and path | Purpose | Behavior |
+|---|---|---|
+| `POST /handshake` | First connection and reconnection | Body `{ firmwareVersion }`. If state is PROVISIONED set ACTIVE, record history and audit `DEVICE_ACTIVATED`. Set connectivity ONLINE. Return `{ serverTime, heartbeatIntervalSec, config: { version, payload } or null }`. If a config profile is assigned and not yet applied, include it. |
+| `POST /heartbeat` | Liveness and health | Body `{ timestamp, health { cpuLoad, memoryUsage, batteryLevel (nullable for mains powered), signalStrength, uptimeSec } }`. Updates `lastSeenAt` and `latestHealth`. Returns 202. |
+| `POST /telemetry` | Sensor readings | Body `{ timestamp, metrics {...}, health {...} (optional) }`. Validate every metric key and type against the device model's `metrics[]`; unknown keys, wrong types, or values outside `min..max` are rejected with 400. Ignore exact duplicates (same device and timestamp). Update `LiveState`, buffer the sample, run alert rule evaluation (8.4). Returns 202. |
+| `GET /commands` | Poll for work | Returns `{ config: { version, payload } or null, update: { jobId, version, downloadPath, sha256 } or null, commands: [ { id, type: "RESTART" } ] }`. Delivering an update marks the job intent as delivered but the job status only changes when the device reports it. Also counts as a heartbeat (updates `lastSeenAt`). |
+| `POST /config-ack` | Configuration result | Body `{ version, status APPLIED|FAILED, error? }`. Updates `config.status`, audits `CONFIG_APPLIED` or `CONFIG_FAILED`. |
+| `POST /updates/:jobId/status` | OTA progress | Body `{ status DOWNLOADING|INSTALLING|VERIFIED|FAILED, newVersion?, errorCode? }`. Rules in 8.6. |
+| `GET /firmware/:firmwareId/download` | Firmware binary | Authenticated with the same device headers. Only allowed if the device has an active job for that firmware. Returns the binary and header `X-Checksum-SHA256`. There are no signed URLs. |
+| `POST /commands/:id/ack` | Command result | Body `{ status ACKED|FAILED }`. |
+
+The telemetry endpoint must respond quickly. Alert evaluation, notifications, and emails run after the response is sent, so a slow mail server can never slow down ingestion.
+
+# 7. WEB API (`/api/v1`) CONVENTIONS AND ENDPOINTS
+
+**Conventions:** JSON only. Authentication by Bearer JWT (8-hour expiry) on everything except login, forgot/reset password, `GET /health`, and (DEMO_MODE only) `GET /auth/demo-accounts`. Pagination `?page=1&pageSize=25` returning `{ items, total, page, pageSize }`. Sorting `?sort=field:asc`. Error format always `{ error: { code, message, details? } }` with codes `VALIDATION_ERROR, UNAUTHENTICATED, FORBIDDEN, NOT_FOUND, CONFLICT, INVALID_TRANSITION, RATE_LIMITED, INTERNAL`. Every state-changing endpoint writes an audit entry. The client sends `X-Tenant-Id` to select the working tenant for SE users (validated against `assignedTenantIds`); client roles always use their own tenant and the header is ignored.
+
+| Module | Endpoints (roles) |
+|---|---|
+| Auth | `POST /auth/login`, `POST /auth/logout`, `GET /auth/me`, `POST /auth/change-password`, `POST /auth/forgot-password`, `POST /auth/reset-password`, `GET /auth/demo-accounts` (DEMO_MODE) |
+| Tenants | `GET /tenants` (PA all, SE assigned, others own), `POST /tenants` (PA), `GET /tenants/:id`, `PATCH /tenants/:id` (PA), `POST /tenants/:id/suspend` and `/reactivate` (PA), `PATCH /tenants/:id/settings` (PA, CA own) |
+| Users | `GET /users` (PA all, CA own tenant), `POST /users` (PA creates SE, FT, and the first CA of a tenant; CA creates CA, CM, CO in own tenant), `PATCH /users/:id`, `POST /users/:id/deactivate`, `/reactivate`, `POST /users/:id/send-reset` , `PUT /users/:id/tenants` (PA: assign tenants to SE and FT) |
+| Sites | `GET, POST, PATCH, DELETE /sites` (write: CA, SE; read: all in tenant; delete blocked with 409 if devices exist) |
+| Device models | `GET /device-models` (all), `POST, PATCH /device-models` (PA, SE) |
+| Devices | `GET /devices` (filters `q` for serial/name/ID, `siteId, modelId, state, connectivity, tag, firmwareVersion`), `POST /devices` (CA, SE), `POST /devices/import?dryRun=` (CA, SE: JSON rows from a parsed CSV), `GET /devices/:id`, `PATCH /devices/:id` (name, site, tags), `POST /devices/:id/regenerate-key`, `POST /devices/:id/state` (SUSPEND, RESUME, SET_UNDER_MAINTENANCE, SET_ACTIVE, DECOMMISSION), `GET /devices/:id/history`, `GET /devices/:id/telemetry?metric=&range=15m|1h|24h|7d`, `GET /devices/:id/live`, `POST /devices/:id/commands` (RESTART; CA, SE) |
+| Fleet | `GET /fleet/summary` (tenant counts by state, connectivity, site, model, firmware), `GET /fleet/overview` (SE and PA: per-tenant counts, open critical alerts) |
+| Config | `GET, POST, PATCH /config-profiles` (CA, SE; CM and CO read), `POST /config-profiles/:id/push` `{ targetType, targetValue }` |
+| Firmware | `GET /firmware` (PA, SE all; CA and CM only RELEASED for models they own), `POST /firmware` (PA, SE multipart upload), `PATCH /firmware/:id/status` (release, withdraw) |
+| Rollouts | `POST /rollouts/preview` (returns included and excluded devices with reasons), `GET, POST /rollouts`, `GET /rollouts/:id` (with jobs), `POST /rollouts/:id/decision` (CM: approve or reject with reason), `POST /rollouts/:id/cancel` (CA, SE) |
+| Alert rules | `GET, POST, PATCH, DELETE /alert-rules` (write: CA, SE; read: CM, CO) |
+| Alerts | `GET /alerts`, `POST /alerts/:id/ack` (CO, CA, SE), `POST /alerts/:id/ticket` (SE), `POST /alerts/:id/close` (SE, reason) |
+| Notifications | `GET /notifications`, `POST /notifications/:id/read`, `POST /notifications/read-all` |
+| Tickets | `GET, POST /tickets` (POST: CO, CA, CM create service requests; SE creates any), `GET /tickets/:id`, `PATCH /tickets/:id` (SE: assignee, priority, status), `POST /tickets/:id/comments`, `POST /tickets/:id/resolve` (SE), `/confirm` (CO, CA), `/reopen` (CO, CA, SE), `/close` (SE) |
+| Work orders | `GET /work-orders` (SE: assigned tenants; FT: own; clients: own tenant read-only), `POST /work-orders` (SE), `PATCH /work-orders/:id` (SE), `POST /work-orders/:id/assign` (SE), `/decision` (CM), `/start` (FT), `/complete` (FT), `/cancel` (SE) |
+| Maintenance plans | `GET, POST, PATCH, DELETE /maintenance-plans` (SE) |
+| Reports | `GET /reports/kpis`, `/reports/availability`, `/reports/alerts`, `/reports/tickets`, `/reports/firmware-compliance`, `/reports/maintenance`, `GET /reports/platform-health` (PA). All accept `from, to, siteId, modelId` |
+| Audit | `GET /audit` (PA all tenants; CA own tenant; filters actor, action, target, outcome, date range) |
+| Email outbox | `GET /email-outbox` (PA, SE, CA) |
+| Simulator | `POST /simulator/demo-devices`, `POST /simulator/attach`, `POST /simulator/start`, `POST /simulator/stop`, `GET /simulator/status`, `POST /simulator/inject` (PA, SE, CA within scope) |
+| Meta | `GET /health` (no auth), `GET /openapi.json` |
+
+# 8. BUSINESS RULES AND BACKGROUND JOBS
+
+## 8.1 Authentication and security (FR-SEC-01, FR-SEC-02, NFR-03)
+- Login by email and password. Hash passwords with `bcryptjs` (cost 10). Lock the account for 15 minutes after 5 consecutive failed logins (`USER_LOCKED` audit). Use one generic message for wrong email or password.
+- Forgot password creates a one-hour single-use token (store only its hash) and sends a reset link by email (or shows it in the outbox).
+- Password policy: at least 8 characters with a letter and a digit.
+- RBAC middleware: `requireRole([...])` on every route, plus the tenant scoping from 2.3. Add `helmet`, request body size limits, and rate limiting on login and on the device API (per device).
+- Escape or validate all user input. Never build queries from raw input.
+
+## 8.2 Tenants and users (UC-02, UC-03)
+- PA creates a tenant (name, unique code, contact email) and its first Client Admin. Suspend and reactivate are instant and audited. A suspended tenant's active sessions get 403 on the next request.
+- Deactivated users cannot log in. PA cannot deactivate the last active PA.
+
+## 8.3 Device registration (UC-04)
+1. Validate required fields; reject duplicate `serialNumber` or `hardwareId` with 409 naming the conflicting field.
+2. Create the device in state PROVISIONED; generate `deviceId` and the API key; store `apiKeyHash` and `apiKeyLast4`.
+3. Return the provisioning file content once: `{ deviceId, apiKey, apiBaseUrl, modelId, tenantCode }`. The UI shows it in a modal with Copy and Download (`<deviceId>-provisioning.json`) buttons and a warning that the key cannot be shown again.
+4. "Regenerate key" immediately invalidates the old key and returns a new provisioning file (audited).
+5. Optional initial configuration profile: stored as `config.status = PENDING` and delivered on handshake.
+6. Bulk import (FR-DEV-03, Should): the UI parses a CSV (columns `serialNumber, hardwareId, model, site, tags, name`) and sends rows with `dryRun=true` first; the response lists valid rows and row-level errors; after confirmation send again with `dryRun=false`. Return a combined provisioning JSON (list of files) for download; valid rows are created even if others fail.
+
+## 8.4 Alert rule evaluation (FR-ALR-01, FR-ALR-02)
+- Run on every accepted telemetry or heartbeat message, after the response is sent.
+- For each enabled rule whose scope matches the device (DEVICE id, MODEL id, or SITE id) and whose `metricKey` exists in the message: if the condition is true, record `breachSince` (in memory per device and rule); when it has been continuously true for `durationSec` (0 means immediately), create an alert. If the condition becomes false, clear `breachSince`.
+- **De-duplication:** do not create a new alert when an alert for the same device and rule is already OPEN or ACKNOWLEDGED.
+- **Suppression:** do not create alerts for devices that are SUSPENDED or UNDER_MAINTENANCE.
+- `OFFLINE` rules are evaluated by the offline detector job (8.9), using the rule's own `durationSec` (default: tenant offline limit).
+- Creating an alert writes the audit entry `ALERT_CREATED`, creates in-app notifications and email outbox rows for the recipients (default recipients when a rule has none: all CA and CO users of the tenant and the SE users assigned to the tenant), and updates dashboards.
+
+## 8.5 Tickets, service requests, and work orders (UC-09, UC-10, UC-13, UC-14)
+- An SE converts an alert into a ticket (`source ALERT`, priority from severity, assignee = the SE). A client user raises a service request (`source SERVICE_REQUEST`, device or site optional, notifies the tenant's assigned SE users). Both appear in the SE ticket queue.
+- Comments are visible to the client and the provider (no internal-only notes in Phase 1).
+- Setting a ticket to WAITING_ON_CLIENT notifies the client; any client comment moves it back to IN_PROGRESS.
+- Closing a ticket closes its linked alert (audited). Resolution requires root cause and notes.
+- An SE creates a work order from a ticket or manually (CORRECTIVE or PREVENTIVE), assigns an FT with a planned window, and the FT receives an in-app notification and an email. If approval applies (5.3), CM users of the tenant receive an approval request notification and email.
+- **FT starts a work order:** set device state UNDER_MAINTENANCE (reason `Work order WO-xxxx`), set work order IN_PROGRESS, set `startedAt`. Alerts for the device are suppressed.
+- **FT completes a work order:** require `actionsTaken` and `timeSpentMin`; save parts and notes; set COMPLETED; set the device back to ACTIVE; add a system comment to the linked ticket. If the device is not ONLINE within 5 minutes after completion, show a warning banner on the linked ticket (informational only).
+- **Maintenance plans (FR-MNT-02):** a job creates PREVENTIVE work orders for each device in scope when `nextRunAt <= now`, then advances `nextRunAt` by `everyDays`.
+
+## 8.6 Firmware and OTA (UC-11, UC-12)
+- **Upload (PA, SE):** version (semver), model, release notes, file (max 5 MB). The server computes SHA-256. If the uploader typed a checksum it must match, otherwise reject with 400. New packages are DRAFT; RELEASE makes them visible to tenants; WITHDRAW hides them from new rollouts.
+- **Create rollout (CA, SE):** choose a RELEASED package, the target (a device, a tag, or a site), and a start time (now or later). `POST /rollouts/preview` returns the included devices and excluded devices with reasons: wrong model, not ACTIVE, already has an active job, already on this version. Creating the rollout creates one QUEUED job per included device.
+- **Approval:** if the tenant has `requireRolloutApproval`, status starts as PENDING_APPROVAL and CM users are notified (in-app and email); CM approves (to PENDING) or rejects with a reason (to REJECTED, no jobs run, creator notified).
+- **Start:** a scheduler job moves PENDING rollouts to RUNNING when `scheduledAt <= now` (or immediately if null).
+- **Delivery:** when a device calls `GET /commands`, return its QUEUED job (only for RUNNING rollouts).
+- **Status reports:** the device reports DOWNLOADING, INSTALLING, then VERIFIED with `newVersion`, or FAILED with `errorCode` (for example `CHECKSUM_MISMATCH`, `BOOT_FAILURE`, `ROLLED_BACK`). On VERIFIED update `device.firmwareVersion`. On FAILED create an alert (severity CRITICAL, message "OTA update failed: <errorCode>") and notify the rollout owner. Update rollout counts after each report; when all jobs are terminal set COMPLETED, audit `ROLLOUT_COMPLETED`, and notify the owner by in-app notification and email.
+- **Cancel:** the owner (or an SE) can cancel a rollout; QUEUED jobs become CANCELLED; jobs already DOWNLOADING or INSTALLING continue.
+- Devices that are SUSPENDED or UNDER_MAINTENANCE when delivery happens are skipped (job stays QUEUED).
+- The device must verify the SHA-256 checksum itself before installing (the simulator does this with the `X-Checksum-SHA256` header).
+
+## 8.7 Configuration profiles (FR-LCM-03)
+- A profile belongs to a tenant and a device model, has an integer version, and a JSON payload. Editing creates version N+1 (old versions stay readable). Pushing to a device, tag, or site sets each target's `config.status = PENDING` and creates an `APPLY_CONFIG` command delivered through `GET /commands` (or through the handshake). The device acknowledges with `config-ack`; show Pending, Applied, or Failed on the device and in a push result list. A failed config push never blocks activation; the user can push again.
+
+## 8.8 Notifications and email (FR-ALR-03)
+- In-app notifications drive the bell icon (unread count, dropdown of latest 10, full page with filters).
+- Every email goes to `emailOutbox` first. A worker sends QUEUED rows. On failure keep the row QUEUED, increment `attempts`, and retry up to 3 more times (30 s, 60 s, 120 s); after that mark FAILED and set `emailDeliveryFailed = true` on the related alert, which shows a "Email delivery failed" warning on the alert. Alert creation is never blocked by email problems.
+- Email templates are plain, professional HTML: subject, short summary, key facts, and a button linking to the item (`PUBLIC_BASE_URL` + path).
+
+## 8.9 Background jobs (implement as timers inside the server process; make them idempotent)
+
+| Job | Interval | Behavior |
+|---|---|---|
+| Offline detector | 15 s | Mark ACTIVE and UNDER_MAINTENANCE devices OFFLINE when silent longer than the tenant limit; write `connectivityEvents`; evaluate OFFLINE alert rules; mark ONLINE again on the next message (also write an event). |
+| Telemetry flusher | 60 s | Write buffered samples to `telemetryBuckets`; persist debounced `lastSeenAt`. Also flush on graceful shutdown. |
+| Escalation | 60 s | CRITICAL alerts still OPEN after `criticalAckMinutes`: level 1 notifies the tenant's CA users; after another `criticalAckMinutes` still OPEN: level 2 notifies SE supervisors (`isSupervisor`) and PA users. Audit `ALERT_ESCALATED`. |
+| Email worker | 30 s | See 8.8. |
+| Rollout scheduler | 10 s | See 8.6. |
+| Maintenance planner | 5 min | See 8.5. |
+| Retention | daily | Delete telemetry buckets older than the retention period (default 90 days); never delete audit logs (kept at least 1 year). |
+
+# 9. FUNCTIONAL REQUIREMENTS (traceability list: implement all M and S; leave C for Phase 2)
+
+Priority: **M** = Must, **S** = Should, **C** = Could (Phase 2, do not build).
+
+| ID | Requirement | Pri |
+|---|---|---|
+| FR-ORG-01 | PA creates, edits, and suspends client organizations (tenants). A suspended tenant cannot log in and its devices are rejected. | M |
+| FR-ORG-02 | PA creates provider staff accounts (SE, FT) and assigns each to one or more tenants. | M |
+| FR-ORG-03 | CA creates, edits, and deactivates users of the own organization and assigns a client role (CA, CM, CO). | M |
+| FR-ORG-04 | Every read and write is scoped by tenant. Client users reach only their own organization's data; provider staff reach only assigned tenants' data. | M |
+| FR-ORG-05 | CA defines sites (plant, line, location) to which devices are assigned. | S |
+| FR-DEV-01 | Device-model catalogue (manufacturer, hardware revision, metric definitions, supported firmware) managed by PA and SE. | M |
+| FR-DEV-02 | CA or SE registers a device with serial number, hardware ID (MAC/IMEI), model, site, and tags; duplicates are rejected. | M |
+| FR-DEV-03 | Bulk registration from a CSV file with a row-by-row validation report. | S |
+| FR-DEV-04 | Unique device ID and secret API key generated at registration; only a hash is stored; the key is shown once in a downloadable provisioning file. | M |
+| FR-DEV-05 | Searchable, filterable inventory (model, site, tag, lifecycle state, connectivity, firmware version). | M |
+| FR-DEV-06 | Device detail page: identity, state, configuration, firmware, latest telemetry, tickets, maintenance history timeline. | M |
+| FR-DEV-07 | Tag-based groups for bulk actions (a group is the set of devices sharing a tag). | S |
+| FR-LCM-01 | Lifecycle states Provisioned, Active, Under Maintenance, Suspended, Decommissioned; allowed transitions enforced; actor, reason, and time recorded. | M |
+| FR-LCM-02 | Provisioned to Active automatically after the first successful authenticated handshake. | M |
+| FR-LCM-03 | Versioned JSON configuration profiles per device model, pushed to a device or group; each device tracked as Pending, Applied, or Failed. | M |
+| FR-LCM-04 | Suspend and resume a device; suspended devices are rejected at the device API. | S |
+| FR-LCM-05 | CA decommissions a device (with reason); credentials revoked; history kept read-only. | M |
+| FR-MON-01 | Connectivity is Online or Offline (no heartbeat for N intervals, default 3). Health problems are raised through alert rules. | M |
+| FR-MON-02 | Record health metrics: CPU load, memory, battery/power, signal strength, uptime. | M |
+| FR-MON-03 | Fleet dashboard with counts by connectivity and lifecycle state per site, drill-down to a device; provider staff switch between assigned tenants. | M |
+| FR-TEL-01 | Ingest telemetry and heartbeats through an HTTPS REST API using JSON. | M |
+| FR-TEL-02 | Authenticate every device request by device ID and API key; reject unknown, suspended, or decommissioned devices and suspended tenants. | M |
+| FR-TEL-03 | Validate each payload against the metric definitions (name, type, unit) of the device model; reject and count invalid payloads. | M |
+| FR-TEL-04 | Store telemetry with device time and server receive time in time-ordered storage; ignore exact duplicates. | M |
+| FR-TEL-05 | Live telemetry (updates within 5 seconds without page reload) and historical charts by time range. | M |
+| FR-TEL-06 | Accept telemetry over MQTT. | C |
+| FR-FW-01 | PA and SE upload firmware packages per device model with version, release notes, SHA-256 checksum; status Draft, Released, or Withdrawn. | M |
+| FR-FW-02 | Tenants see only Released firmware compatible with their device models; incompatible deployments are blocked. | M |
+| FR-FW-03 | CA or SE creates an update rollout for a device, group, or site, immediately or at a scheduled time. | M |
+| FR-FW-04 | Update command (version, download path, checksum) delivered when the device polls; device reports Downloading, Installing, Verified, or Failed. Downloads are authenticated with the device API key. | M |
+| FR-FW-05 | Per-device and per-rollout progress, failure codes, cancellation of pending jobs, device-side rollback recorded. | M |
+| FR-FW-06 | Optional CM approval of a rollout before it starts (configurable per tenant). | S |
+| FR-FW-07 | Staged rollouts (pilot batch first). | C |
+| FR-ALR-01 | CA or SE defines alert rules: metric threshold with duration, offline timeout, or health anomaly; severity Warning or Critical; scope a single device, a device model, or a site. | M |
+| FR-ALR-02 | Rules evaluated on each telemetry message and by a periodic offline check; one alert per breach (no duplicates); the alert stays open until acknowledged and resolved. | M |
+| FR-ALR-03 | Notify recipients by in-app notification and email; log delivery status; retry failed emails up to 3 times. | M |
+| FR-ALR-04 | CO, CA, or SE acknowledges an alert (who and when recorded). | M |
+| FR-ALR-05 | Escalate a Critical alert not acknowledged within a configurable time to the next recipient (CA, then provider supervisor). | S |
+| FR-ALR-06 | SE converts an alert into a ticket with assignee, status (Open, In Progress, Waiting on Client, Resolved, Closed), comments, and resolution notes. | M |
+| FR-ALR-07 | CO or CA raises a service request for a device or site without an alert; status and updates visible to the client. | M |
+| FR-MNT-01 | SE creates corrective work orders from tickets and preventive work orders for a device or group, linked to the device. | M |
+| FR-MNT-02 | Recurring preventive maintenance plans (every N days) generate work orders automatically. | S |
+| FR-MNT-03 | SE assigns a work order to an FT with a planned time window; the FT is notified by in-app notification and email. | M |
+| FR-MNT-04 | Mobile-friendly "My Work Orders" page for FT with device details, site, history, and a checklist. | M |
+| FR-MNT-05 | FT starts and completes a work order and records actions taken, parts replaced, notes, and time spent. | M |
+| FR-MNT-06 | Device set to Under Maintenance while work is in progress, alerts suppressed, Active restored on completion. | M |
+| FR-MNT-07 | CM approves or rejects a proposed maintenance window that causes downtime. | S |
+| FR-RPT-01 | KPIs per tenant or site: availability %, MTTR, alerts by severity, open tickets, firmware compliance %, maintenance completion rate. | M |
+| FR-RPT-02 | Export filtered reports (date range, site, device model) as CSV. | M |
+| FR-RPT-03 | Export filtered reports as PDF. | S |
+| FR-RPT-04 | PA platform health dashboard (tenants, devices, ingestion rate, error rate). | S |
+| FR-RPT-05 | Scheduled weekly summary email to CM. | C |
+| FR-SEC-01 | Email and password login (hashed storage, lockout after repeated failures, password reset by email). | M |
+| FR-SEC-02 | Role-based access control on every page and API endpoint according to section 2.2. | M |
+| FR-SEC-03 | Append-only audit entry for every critical event with actor, role, tenant, action, target, outcome, IP address, and time. | M |
+| FR-SEC-04 | Audit log viewer with filters. PA sees all entries; CA sees the own tenant's entries. | S |
+| FR-SEC-05 | TOTP multi-factor authentication for admin roles. | C |
+
+# 10. USER INTERFACE SPECIFICATION
+
+## 10.1 Layout and navigation (all roles)
+
+- **App shell:** collapsible left sidebar on desktop (role-based menu with icons), top bar with page title and breadcrumbs, global device search (by serial, name, or ID; opens device detail), notification bell with unread badge, and a user menu (Profile, Change password, Sign out).
+- **SE only:** a tenant switcher in the top bar listing assigned tenants; selection is remembered for the session and sent as `X-Tenant-Id`.
+- **Mobile (below 768 px):** sidebar becomes a bottom tab bar (max 5 items) for FT and CO; tables become stacked cards; all primary actions are reachable with one thumb.
+- **Role home pages:** PA `/platform`, SE `/noc`, FT `/my-work-orders`, CA `/dashboard`, CM `/dashboard`, CO `/live-status`. Unauthorized routes redirect to the role home with a toast; unknown routes show a 404 page.
+- **Demo mode:** when `DEMO_MODE` is true the login page shows a "Demo accounts" panel with one-click sign-in buttons for every seeded role (label shows role and tenant).
+
+## 10.2 Pages by role
+
+| Route | Roles | Content |
+|---|---|---|
+| `/login`, `/forgot-password`, `/reset-password/:token` | public | Clean centered forms with validation messages; generic error for bad credentials; lockout message with remaining minutes. |
+| `/profile` | all | Name, email (read-only), change password. |
+| `/notifications` | all | Full notification list with unread filter, mark read, mark all read, click to open the linked item. |
+| `/platform` | PA | Cards: tenants (active/suspended), devices total by state, messages per minute, invalid-payload rate, open Critical alerts, firmware packages. Table of tenants with device counts and online percentage. (FR-RPT-04) |
+| `/tenants`, `/tenants/:id` | PA | Tenant table with search and status filter; create/edit modal (name, code, contact email, first Client Admin); suspend/reactivate with confirm; detail page with settings, users, device counts, recent audit entries. |
+| `/staff` | PA | Provider staff table (SE, FT); create/edit; tenant assignment multi-select; supervisor flag for SE; deactivate. |
+| `/users` | CA | Own-tenant users: create with role select (CA, CM, CO), edit, deactivate, resend reset email. |
+| `/device-models` | PA, SE | Model catalogue with a metric definition editor (key, label, type, unit, min, max). |
+| `/firmware` | PA, SE | Package table (model, version, status, size, checksum, uploader); upload dialog with file chooser, computed SHA-256 preview, release notes; Release and Withdraw actions. |
+| `/noc` | SE | Cross-tenant overview for assigned tenants: per-tenant cards (devices, online %, open alerts by severity, open tickets, work orders today), a prioritized "Needs attention" list (Critical alerts unacknowledged, tickets waiting, overdue work orders). |
+| `/dashboard` | CA, CM, SE (selected tenant) | Fleet dashboard (10.3). CM sees the same plus KPI cards and an "Approvals waiting" card. |
+| `/live-status` | CO | Large tiles grouped by site; each tile shows device name, connectivity dot, latest 2 metrics, and an alert badge; filter by site and "only problems". Auto-refresh every 5 s. Quick buttons: Acknowledge alert, Raise service request. |
+| `/devices` | PA no; others yes | Inventory table (name, serial, model, site, tags, state, connectivity, firmware, last seen) with search, filters, sort, pagination, multi-select and bulk actions (Push config, Create rollout, Add tag, Suspend). Register Device and Import CSV buttons for CA and SE only. |
+| `/devices/:id` | roles with access | Device detail (10.4). |
+| `/sites` | CA, SE (write); others read | Site list with device counts; create/edit; delete blocked when devices exist. |
+| `/config-profiles` | CA, SE (write); CM, CO read | Profiles grouped by model; JSON editor with validation; version history; Push dialog (device, tag, or site) with result list. |
+| `/alert-rules` | CA, SE (write); CM, CO read | Rule table with enable toggle; create/edit form (kind, metric, operator, threshold, duration, severity, scope, recipients). |
+| `/alerts` | SE, CA, CO, CM(read) | Alert queue with severity and status filters, device, time open, escalation badge, email-failed warning; row actions Acknowledge, Create ticket (SE), Close (SE). Alert detail drawer with metric snapshot and timeline. |
+| `/tickets`, `/tickets/:id` | SE, CA, CM, CO, FT(linked read) | Ticket list with status, priority, source, assignee filters; "New service request" form for client roles; detail with description, device link, comments thread, status controls by role (resolve with root cause and notes; client Confirm or Reopen), linked alert and work orders. |
+| `/work-orders` | SE (manage); CA, CM, CO (read) | Work order list and calendar-style list for the next 14 days; create form (from ticket or device, type, instructions, checklist, window, downtime flag), assign to FT, cancel. CM sees pending approvals. |
+| `/my-work-orders` | FT | Mobile-first card list grouped Today, Upcoming, Completed; large status chips; tap opens detail. |
+| `/work-orders/:id` | SE, FT, clients (read) | Device and site info, planned window, instructions, checklist (FT can tick), history of the device, Start button, Complete form (actions taken, parts replaced as repeatable rows, notes, time spent, outcome). Approval status banner. |
+| `/maintenance-plans` | SE | Plan table and form (scope, every N days, template, assignee, next run, enabled). |
+| `/approvals` | CM | Two tabs: Rollouts and Maintenance windows. Each card shows what, where, when, impact (number of devices), requester, and Approve or Reject (reason required). |
+| `/rollouts`, `/rollouts/:id` | CA, SE (manage); CM read | Rollout list; creation wizard (step 1 choose Released firmware, step 2 choose target and see the include/exclude preview, step 3 schedule and confirm); detail page with progress bar, counts, per-device job table (status, error code), auto-refresh, Cancel button. |
+| `/reports` | PA, SE, CA, CM (CO limited) | Filters (date range, site, model); KPI cards; charts; detail tables; Export CSV and Export PDF buttons (section 13). |
+| `/audit` | PA, CA (own tenant) | Filterable table (date range, actor, action, target, outcome); row expand shows `details` JSON; read-only. |
+| `/email-outbox` | PA, SE, CA | Table of queued, sent, and failed emails with preview and attempts. |
+| `/simulator` | PA, SE, CA | Device Simulator control page (section 12). |
+| `/settings` | CA | Tenant settings form (heartbeat interval, missed intervals, critical acknowledgement minutes, require rollout approval, require maintenance approval). |
+
+## 10.3 Fleet dashboard widgets (`/dashboard`)
+
+1. KPI row: Total devices, Online %, Active alerts (Critical and Warning), Open tickets, Work orders today.
+2. Donut chart: connectivity (Online, Offline, Unknown). Bar chart: devices by lifecycle state.
+3. Table "By site": devices, online, offline, open alerts; click filters the inventory.
+4. Recent alerts list (latest 8) with severity chips and relative time.
+5. Firmware version distribution (bar by version per model).
+6. Live telemetry strip: select up to 3 devices and show small line charts, refresh every 5 s.
+All widgets refresh every 5 s from `GET /fleet/summary` and `GET /alerts?limit=8` without page reload and show skeletons on first load.
+
+## 10.4 Device detail (`/devices/:id`)
+
+Header: name, serial, model, site, state chip, connectivity dot with last seen (relative time), firmware version, config status chip, action menu (Edit, Regenerate key, Suspend/Resume, Set Under Maintenance, Push config, Restart, Decommission) filtered by role and state.
+Tabs:
+1. **Overview:** identity card, latest health gauges (CPU, memory, battery, signal, uptime), latest metric tiles, open alerts, invalid payload count.
+2. **Telemetry:** time range buttons (15 min, 1 h, 24 h, 7 d); one Recharts line chart per metric with unit, min/max reference lines from the model; live mode refreshes every 5 s; Export CSV for the chart (Could, only if trivial).
+3. **Configuration:** assigned profile and version, status, last error, history of pushes.
+4. **Firmware:** current version, rollout job history (version, status, time, error).
+5. **Tickets and alerts:** linked alerts and tickets with status chips.
+6. **Maintenance:** work orders and maintenance records.
+7. **Timeline:** merged chronological list of state changes, connectivity changes, config pushes, firmware jobs, alerts, tickets, and work orders (FR-DEV-06).
+
+# 11. DESIGN SYSTEM
+
+- **Look:** modern enterprise dashboard: clean, calm, data-dense but readable. Neutral slate surfaces (`slate-50` page, white cards, `slate-900` sidebar), indigo primary (`indigo-600`), 12 px rounded cards with subtle borders (no heavy shadows), Inter font, 14 px base text.
+- **Status colors (use everywhere, with text labels, never color alone):** Online/Active/Verified/Applied/Released/Completed = emerald; Offline/Failed/Critical/Rejected = red; Warning/Pending/Under Maintenance/Waiting on Client = amber; Provisioned/Queued/Draft/Open = sky; Suspended/Cancelled/Decommissioned/Withdrawn/Closed = slate.
+- **Components:** build a small reusable library first: Button, IconButton, Input, Select, MultiSelect, Textarea, Modal, Drawer, ConfirmDialog, Tabs, DataTable (server pagination, sort, filters, empty state, loading skeleton), StatusChip, SeverityChip, KpiCard, ChartCard, Toast, Tooltip, Stepper, JsonEditor (textarea with validation), FileDrop, RelativeTime (shows absolute time on hover), EmptyState, PageHeader.
+- **Behavior rules:** every list has loading skeletons, an empty state with a call to action, and an error state with Retry. Every destructive action (suspend tenant, decommission, cancel rollout, delete rule) uses ConfirmDialog; decommission requires typing the device serial number. Every form shows inline validation messages and disables Submit while saving. Success and error toasts for every mutation. Keep filter and page state in the URL query string.
+- **Accessibility:** labels on all inputs, visible focus rings, color contrast AA, keyboard-operable dialogs (Escape closes, focus trap), `aria-live` for toasts, charts have text summaries.
+- **Date and number formats:** `21 Nov 2026, 14:05` in local time; relative time for recent items; metric values with units and sensible rounding.
+- **Responsive:** desktop first for admin pages, mobile first for `/my-work-orders`, `/work-orders/:id`, `/live-status`, and the login page.
+
+# 12. DEVICE SIMULATOR (replaces real hardware; must use the real device API)
+
+## 12.1 In-app simulator page (`/simulator`)
+
+Controls for PA, SE, and CA (scoped to the working tenant):
+
+1. **Create demo devices:** button "Create N demo devices" (N from 1 to 50, model and site selectors). It registers devices through the normal registration service, keeps their API keys in a server-only `simulatorCredentials` store, and attaches them to the simulator.
+2. **Attach a registered device:** paste a provisioning file (or choose the JSON file) from the registration modal. The simulator then behaves as that device. This demonstrates UC-04 end to end.
+3. **Run controls:** Start all, Stop all, per-device Start/Stop; telemetry interval (5 to 60 s, default 10 s); behavior profile (Normal, Drifting temperature, Battery drain, Random dropouts).
+4. **Fault injection (per device):** Force offline (stop sending for 3 minutes), Spike a metric (choose metric and value for 2 minutes), Set low battery, Fail next OTA with CHECKSUM_MISMATCH, Fail next OTA with BOOT_FAILURE (reports ROLLED_BACK), Ignore next config.
+5. **Live log:** the last 100 simulator events (handshake, heartbeats, commands, OTA steps) with timestamps.
+
+## 12.2 Behavior of each simulated device
+
+- On start: `POST /device/v1/handshake`, apply any returned config and `POST /config-ack` (APPLIED, unless "Ignore next config" is set, then FAILED).
+- Every interval: `POST /device/v1/telemetry` with values generated per model and behavior profile (smooth random walk inside each metric's min and max, small noise) plus health values; `POST /heartbeat` at the tenant heartbeat interval; `GET /device/v1/commands` every interval.
+- **Commands:** RESTART: go silent for 10 s, then re-handshake with a higher uptime reset, ack the command. APPLY_CONFIG: apply and ack.
+- **OTA update:** on receiving an update: report DOWNLOADING, download the binary with `GET /device/v1/firmware/:id/download`, compute SHA-256 and compare with `X-Checksum-SHA256` and with the command's `sha256`; wait 5 s and report INSTALLING; wait 5 s and report VERIFIED with `newVersion`, then re-handshake with the new firmware version. On mismatch or injected failure report FAILED with the matching `errorCode` and keep the previous version.
+- The simulator calls the device API over HTTP on `localhost`, exactly like an external device would, so every device-API rule (auth, validation, 401/403/400) is exercised.
+- Server-side timers keep running only while the server process is awake; show a note about this on the page.
+
+## 12.3 Standalone CLI (`/simulator/simulator.mjs`)
+
+A small Node script (no dependencies beyond `node-fetch` or the built-in `fetch`) that reads `BASE_URL`, `DEVICE_ID`, `API_KEY`, `INTERVAL_SEC` from environment variables or a provisioning file path argument, and implements the same behavior as 12.2 for one device. Document it in the README so the same API can be shown from a laptop terminal.
+
+# 13. REPORTS AND KPI DEFINITIONS (FR-RPT-01 to FR-RPT-04)
+
+Filters on every report: date range (default last 7 days), site, device model. Use `connectivityEvents`, `alerts`, `tickets`, `workOrders`, `devices`, and `firmwarePackages`.
+
+- **Availability %** (per device): ONLINE time divided by the period during which the device was in state ACTIVE or UNDER_MAINTENANCE within the range (computed from `connectivityEvents` and `deviceStateHistory`). Fleet availability is the mean across devices. Show per site and per model.
+- **MTTR:** mean of `resolvedAt - createdAt` of tickets resolved in the range, in hours.
+- **Alerts by severity:** count of alerts created in the range, per severity, plus a daily trend line.
+- **Open tickets:** count with status not CLOSED at the end of the range, by priority.
+- **Firmware compliance %:** devices running the latest RELEASED version of their model, divided by devices whose model has at least one RELEASED version. List non-compliant devices.
+- **Maintenance completion rate:** COMPLETED work orders divided by work orders whose `plannedStart` is in the range (excluding CANCELLED).
+- **Platform health (PA):** tenants, devices by state, messages per minute (last hour), invalid-payload rate, open Critical alerts, email failures.
+- **Export:** CSV generated in the browser from the on-screen data (one CSV per report table, UTF-8 with header row, filename includes tenant code and date range). PDF generated in the browser with `jspdf` + `jspdf-autotable` (title, filters, KPI cards as a table, detail tables) or a print-optimized stylesheet if that fails. Exports are audited (`REPORT_EXPORTED`).
+
+# 14. QUALITY BAR
+
+- No unhandled promise rejections; every async route uses a wrapper that forwards errors to the error handler.
+- Never return more than 200 items per request; every list is paginated.
+- Avoid N+1 reads: batch lookups for names (users, devices, sites) and cache small reference data in memory with short TTL.
+- Every API response shape is typed and shared between client and server via a `shared` types file.
+- Log with a small structured logger (level, time, requestId). Do not log request bodies for auth routes.
+- Handle server restarts gracefully: jobs resume, `LiveState` rebuilds, simulator devices stay registered but simulation stops.
+
+# 15. SEED DATA AND DEMO MODE
+
+Provide `npm run seed` and, when `DEMO_MODE=true`, a PA-only button on `/platform` "Load / reset demo data" (with ConfirmDialog). The seed is idempotent and creates:
+
+- **Tenants (3):** `KTL` "Karnaphuli Textiles Ltd" (`requireRolloutApproval = true`), `MFP` "Meghna Food Processing", `SCW` "Sundarbans Cement Works". Two sites each (for example "Dyeing Plant" and "Packing Line").
+- **Users** (password for all demo users: `Demo@12345`, domain `omnisphere.demo`): PA `admin@`; SE `noc1@` (assigned KTL and MFP, supervisor) and `noc2@` (assigned MFP and SCW); FT `tech1@` and `tech2@` (assigned to all three tenants); per tenant, lowercase code: `admin.ktl@` (CA), `manager.ktl@` (CM), `operator1.ktl@` and `operator2.ktl@` (CO), and the same for `mfp` and `scw`.
+- **Device models (3):** `TH-200 Temperature and Humidity Sensor` (metrics: `temperature` number °C 0 to 120, `humidity` number % 0 to 100); `VM-310 Vibration Monitor` (`vibration_rms` mm/s 0 to 50, `temperature` °C 0 to 150); `EM-120 Energy Meter` (`voltage` V 0 to 500, `current` A 0 to 200, `power_kw` kW 0 to 150, `energy_kwh` kWh 0 to 100000). Health keys for every model: `cpuLoad` %, `memoryUsage` %, `batteryLevel` % (null allowed), `signalStrength` dBm (-120 to 0), `uptimeSec`.
+- **Firmware:** for each model `1.0.0` RELEASED, `1.1.0` RELEASED, `1.2.0` DRAFT (small generated binaries with correct SHA-256). Most devices run `1.0.0`, a few run `1.1.0`.
+- **Devices:** 12 per tenant with a realistic mix: 8 ACTIVE, 1 PROVISIONED, 1 SUSPENDED, 1 UNDER_MAINTENANCE, 1 DECOMMISSIONED; named like `KTL-DYE-TH-001`; tags such as `critical`, `line-1`, `outdoor`. ACTIVE devices get credentials in the server-only `simulatorCredentials` store so "Start all" works immediately. Backfill 24 hours of coarse telemetry buckets (5-minute points) and connectivity events for ACTIVE devices.
+- **Rules per tenant:** "Offline for 90 s" (OFFLINE, Critical), "High temperature" (temperature GT 85 for 30 s, Critical for VM-310, Warning for TH-200 at 40), "Low battery" (batteryLevel LT 20, Warning), "High CPU" (cpuLoad GT 90 for 60 s, Warning).
+- **Config profiles:** 2 per model (for example "Standard 30 s" and "Fast 10 s"), assigned to most devices as APPLIED.
+- **Workflow samples per tenant:** 2 closed alerts, 1 open Critical alert, 3 tickets in different statuses (one from a service request), 3 work orders (one PLANNED awaiting approval, one ASSIGNED, one COMPLETED with parts), 1 maintenance plan (every 30 days), 1 completed rollout with all jobs VERIFIED.
+- **Audit entries** for all seeded actions.
+
+# 16. NON-FUNCTIONAL REQUIREMENTS AND TESTS
+
+| ID | Requirement |
+|---|---|
+| NFR-01 | Telemetry appears on the dashboard within 5 s of receipt; 95% of API read requests complete within 1 s with 50 concurrent users. |
+| NFR-02 | Works with 1,000 simulated devices sending a message every 30 s across 10 tenants (about 33 messages per second). Ingestion is in-memory buffered (section 3.2); the API is stateless apart from `LiveState`, which is rebuilt from the database. |
+| NFR-03 | All traffic over HTTPS (provided by the hosting platform); passwords hashed; device API keys stored as hashes; tokens expire; input validation and parameterized or typed data access; helmet and rate limiting. |
+| NFR-04 | Tenant isolation enforced in the repository layer with automated tests proving no endpoint returns another tenant's data (cross-tenant returns 404 or 403). |
+| NFR-05 | Target 99% availability; services restart automatically; email failures never block alert creation; acknowledged telemetry is not lost (flush on shutdown). |
+| NFR-06 | Firmware SHA-256 verified at upload and by the device before install; audit log insert-only from the application; configuration and lifecycle changes versioned or historized. |
+| NFR-07 | Responsive on desktop, tablet, and phone; a trained user registers a device or creates an alert rule in 3 minutes or less; each role lands on a task-focused home screen. |
+| NFR-08 | Modular monolith (Organization, Device, Telemetry, Firmware, Alerting, Maintenance, Reporting, Audit modules); REST API documented with OpenAPI; unit tests on core business rules. |
+| NFR-09 | Raw telemetry kept 90 days then removed by a scheduled job; audit logs kept at least 1 year; periods configurable by environment variable. |
+| NFR-10 | Starts with one command; configuration through environment variables and secrets; deployable to Cloud Run. |
+| NFR-11 | Works in current Chrome and Firefox; device API versioned (`/device/v1`) and independent of the web UI. |
+| NFR-12 | All timestamps stored in UTC and shown in the user's local browser time. |
+
+**Automated tests (Vitest, `npm test` must pass):**
+1. Tenant scoping: for every repository method that returns tenant-owned data, a user of tenant A cannot read, update, or delete tenant B's record (returns not found).
+2. RBAC: table-driven test of section 2.2 against the route table (role x endpoint x expected status).
+3. Device lifecycle: every allowed and forbidden transition in 5.1.
+4. Device API: auth (401, 403), payload validation (400), duplicate sample ignored, handshake activates a PROVISIONED device.
+5. Alert evaluation: threshold with duration, de-duplication, suppression for UNDER_MAINTENANCE and SUSPENDED, no auto-close.
+6. Escalation timing, email retry sequence (3 retries then FAILED).
+7. Rollout preview exclusions, approval flow, job status transitions, completion detection, checksum verification helper.
+8. KPI calculations (availability, MTTR, compliance, completion rate) with fixed fixtures.
+
+# 17. MILESTONES (build one at a time; stop after each)
+
+Every milestone includes: server routes and services, repository code, UI pages, audit entries, seed additions, and tests for the new logic. Run the acceptance steps yourself before reporting.
+
+**Milestone 1: Foundation, identity, tenants, users, audit (UC-01, UC-02, UC-03; FR-ORG-01 to 04, FR-SEC-01 to 03)**
+Scaffold (3.1), repository and TenantContext pattern, auth (login, logout, me, change and reset password, lockout), RBAC middleware, error format, audit service and `GET /audit`, design system components (section 11), app shell with role-based navigation and SE tenant switcher, pages: login, forgot/reset, profile, `/platform` (basic), `/tenants`, `/staff`, `/users`, `/settings`, `/audit`; seed for tenants and users; demo accounts panel; `/health`; OpenAPI skeleton; tests 1 and 2.
+Acceptance: (1) each demo role signs in and sees only its menu; (2) PA creates a tenant with its first CA; (3) CA creates a CM and a CO; (4) five wrong passwords lock the account for 15 minutes; (5) SE sees only assigned tenants in the switcher; (6) requesting another tenant's user by ID as CA returns 404; (7) suspending a tenant blocks its users; (8) PA sees every action in `/audit`, and no edit or delete exists.
+
+**Milestone 2: Sites, device models, registration, inventory, lifecycle (UC-04, UC-05 inventory part, UC-17; FR-ORG-05, FR-DEV-01 to 07, FR-LCM-01, 04, 05)**
+Sites, device models with metric editor, single registration with provisioning modal and file download, regenerate key, bulk CSV import with dry run, inventory with search, filters, multi-select, tags, device detail shell (Overview and Timeline tabs), lifecycle transitions with history, suspend, resume, decommission, `uniqueKeys`, seed for sites, models, and devices; test 3.
+Acceptance: (1) register a device and download the provisioning file; (2) duplicate serial returns a clear 409 message; (3) CSV import shows row errors then creates valid rows; (4) filters and search work; (5) suspend then resume; (6) decommission requires typing the serial and revokes the key; (7) invalid transitions are rejected.
+
+**Milestone 3: Device API, telemetry, monitoring, simulator (UC-06, UC-07; FR-LCM-02, FR-MON-01 to 03, FR-TEL-01 to 05)**
+All `/device/v1` endpoints (commands may return nulls for now), `LiveState`, telemetry buckets and flusher, offline detector, fleet summary and overview endpoints, `/dashboard`, `/noc`, `/live-status`, device Telemetry tab with charts, simulator manager, `/simulator` page, standalone CLI, telemetry backfill in seed; test 4.
+Acceptance: (1) register a device, load its provisioning file into the simulator, device becomes ACTIVE and ONLINE; (2) charts update every 5 s; (3) stopping the simulator makes the device OFFLINE within about 90 s; (4) wrong key returns 401, suspended device 403, bad payload 400; (5) history charts for 15 min, 1 h, 24 h work; (6) dashboards show correct counts.
+
+**Milestone 4: Alert rules, alerts, notifications, email, escalation (UC-08, UC-18, UC-09 first half; FR-ALR-01 to 05)**
+Rules CRUD, evaluation with duration, de-duplication, suppression, alerts queue and detail, acknowledge, notification bell and inbox, email outbox page, email worker with retries, escalation job, default rules in seed, simulator fault injection; tests 5 and 6.
+Acceptance: (1) inject a temperature spike; after the duration an alert appears once; (2) CA, CO, and SE get in-app notifications and outbox emails; (3) acknowledge records who and when; (4) with `criticalAckMinutes = 1` an unacknowledged Critical alert escalates; (5) break SMTP (or force failure) and see 3 retries then the delivery-failed warning; (6) a device under maintenance raises no alert.
+
+**Milestone 5: Tickets, service requests, work orders, maintenance (UC-09 second half, UC-10, UC-13, UC-14; FR-ALR-06, 07, FR-MNT-01 to 07)**
+Tickets and comments, service requests, resolve, confirm, reopen, close; work orders with assignment, approval, start, complete; maintenance plans job; `/my-work-orders` mobile UI; `/approvals` (maintenance tab); device Maintenance tab.
+Acceptance (one end-to-end story): alert, SE creates ticket, SE creates work order with downtime, CM approves, FT starts (device UNDER_MAINTENANCE, alerts suppressed), FT completes (device ACTIVE), SE resolves with root cause, client confirms, ticket CLOSED and alert CLOSED. Also: a CO raises a service request that reaches the SE queue; WAITING_ON_CLIENT flow; a recurring plan creates a work order.
+
+**Milestone 6: Configuration profiles, firmware, OTA rollouts (UC-05 configuration, UC-11, UC-12; FR-LCM-03, FR-FW-01 to 06)**
+Config profiles with versions and push; firmware upload, release, withdraw; rollout wizard with preview; approval for tenants that require it; rollout scheduler; command delivery; simulator OTA behavior and failure injection; rollout detail page; `/approvals` (rollouts tab); test 7.
+Acceptance: (1) upload and release firmware 1.1.0; (2) rollout preview excludes wrong-model and non-ACTIVE devices with reasons; (3) KTL rollout waits for CM approval, MFP starts immediately; (4) simulator devices download, verify, install, and report VERIFIED; the device shows the new version; (5) injected CHECKSUM_MISMATCH gives FAILED, an alert, and a notification; (6) rollout becomes COMPLETED and the owner is notified; (7) config push shows Pending then Applied.
+
+**Milestone 7: Reports, platform health, audit viewer polish (UC-15, UC-16; FR-RPT-01 to 04, FR-SEC-04)**
+All reports and KPI cards (section 13), CSV and PDF export, platform health page, audit filters and detail view; test 8.
+Acceptance: KPI values match the seeded data and recompute after simulator activity; exports open correctly; CA sees only own-tenant audit entries.
+
+**Milestone 8: Hardening, documentation, final polish**
+Complete OpenAPI, README, run the full test suite, empty/loading/error states on every page, responsive pass on every page, accessibility pass, performance pass (pagination, caching), remove dead code, verify every FR in section 9 and produce a PASS/FAIL table in your response, then fix every FAIL.
+
+# 18. DEFINITION OF DONE AND README
+
+The project is done when: every M and S requirement in section 9 works from the UI; section 16 tests pass; all 6 demo roles can complete their main flows on desktop and phone; no console errors; no dead buttons; seed data makes every page non-empty; secrets are only read from environment variables.
+
+`README.md` must contain: project overview, architecture diagram (ASCII), module list, environment variables and secrets table (`JWT_SECRET`, `DEMO_MODE`, `SMTP_*`, `PUBLIC_BASE_URL`, `TELEMETRY_RETENTION_DAYS`), how to run and deploy, demo accounts, how to run the simulator (in-app and CLI), device API reference summary, how to run tests, and a requirement-to-feature traceability table (FR ID to page or endpoint).
+
+Now begin. Read everything once more, then implement **Milestone 1 only**, following sections 0, 2, 3, 4, 7, 8.1, 8.2, 10, 11, and 15 (users and tenants only). When finished, report using the format in section 0, rule 3, and wait for my message "Continue with Milestone 2".
