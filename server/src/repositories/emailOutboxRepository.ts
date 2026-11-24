@@ -118,6 +118,25 @@ export class SqliteEmailOutboxRepository implements IEmailOutboxRepository {
     };
   }
 
+  listDueQueuedSystem(nowIso: string, limit = 50): EmailOutboxItem[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM email_outbox
+         WHERE status = 'QUEUED' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+         ORDER BY created_at ASC
+         LIMIT ?`,
+      )
+      .all(nowIso, limit) as EmailRow[];
+    return rows.map(mapRow);
+  }
+
+  findByIdSystem(id: string): EmailOutboxItem | null {
+    const row = this.db
+      .prepare('SELECT * FROM email_outbox WHERE id = ?')
+      .get(id) as EmailRow | undefined;
+    return row ? mapRow(row) : null;
+  }
+
   updateDeliveryStatus(
     id: string,
     patch: {
@@ -144,3 +163,4 @@ export class SqliteEmailOutboxRepository implements IEmailOutboxRepository {
     return row.count;
   }
 }
+

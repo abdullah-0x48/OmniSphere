@@ -535,6 +535,226 @@ export class SqliteDeviceRepository implements IDeviceRepository {
     this.db.prepare('DELETE FROM simulator_credentials WHERE device_id = ?').run(deviceId);
   }
 
+  listSimulatorCredentialsSystem(tenantIds?: string[] | null): Array<{
+    deviceId: string;
+    tenantId: string;
+    apiKey: string;
+    createdAt: string;
+    updatedAt: string;
+  }> {
+    let rows: Array<{
+      device_id: string;
+      tenant_id: string;
+      api_key: string;
+      created_at: string;
+      updated_at: string;
+    }>;
+
+    if (tenantIds === undefined || tenantIds === null) {
+      rows = this.db
+        .prepare('SELECT device_id, tenant_id, api_key, created_at, updated_at FROM simulator_credentials ORDER BY created_at ASC')
+        .all() as typeof rows;
+    } else if (tenantIds.length === 0) {
+      return [];
+    } else {
+      const placeholders = tenantIds.map(() => '?').join(', ');
+      rows = this.db
+        .prepare(
+          `SELECT device_id, tenant_id, api_key, created_at, updated_at
+           FROM simulator_credentials
+           WHERE tenant_id IN (${placeholders})
+           ORDER BY created_at ASC`,
+        )
+        .all(...tenantIds) as typeof rows;
+    }
+
+    return rows.map((r) => ({
+      deviceId: r.device_id,
+      tenantId: r.tenant_id,
+      apiKey: r.api_key,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    }));
+  }
+
+  findByIdSystem(id: string): DeviceRecord | null {
+    const row = this.db
+      .prepare(`${SELECT_DEVICE_ENRICHED} WHERE d.id = ?`)
+      .get(id) as DeviceRow | undefined;
+    return row ? mapRow(row) : null;
+  }
+
+  listAllSystem(): DeviceRecord[] {
+    const rows = this.db
+      .prepare(`${SELECT_DEVICE_ENRICHED} ORDER BY d.created_at ASC`)
+      .all() as DeviceRow[];
+    return rows.map(mapRow);
+  }
+
+  listAllInScope(ctx: TenantContext, useActiveTenant = true): DevicePublic[] {
+    const scope = this.buildScopeClause(ctx, useActiveTenant);
+    const rows = this.db
+      .prepare(`${SELECT_DEVICE_ENRICHED} WHERE ${scope.clause} ORDER BY d.name ASC`)
+      .all(...scope.params) as DeviceRow[];
+    return rows.map((r) => toDevicePublic(mapRow(r)));
+  }
+
+  activateFromHandshakeSystem(
+    deviceId: string,
+    patch: { firmwareVersion: string; lastSeenAt: string },
+    history?: CreateDeviceHistoryInput | null,
+  ): DeviceRecord | null {
+    const existing = this.findByIdSystem(deviceId);
+    if (!existing) return null;
+
+    const now = new Date().toISOString();
+    const nextState: DeviceLifecycleState =
+      existing.state === 'PROVISIONED' ? 'ACTIVE' : existing.state;
+
+    const tx = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `UPDATE devices
+           SET state = ?,
+               connectivity = 'ONLINE',
+               firmware_version = ?,
+               last_seen_at = ?,
+               updated_at = ?
+           WHERE id = ?`,
+        )
+        .run(nextState, patch.firmwareVersion, patch.lastSeenAt, now, deviceId);
+
+      if (history) {
+        this.db
+          .prepare(
+            `INSERT INTO device_state_history (id, tenant_id, device_id, from_state, to_state, reason, actor_id, at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          )
+          .run(
+            history.id,
+            history.tenantId,
+            history.deviceId,
+            history.from,
+            history.to,
+            history.reason,
+            history.actorId,
+            history.at,
+          );
+      }
+    });
+
+    tx();
+    return this.findByIdSystem(deviceId);
+  }
+
+  updateConnectivitySystem(
+    deviceId: string,
+    connectivity: DeviceConnectivity,
+    lastSeenAt?: string | null,
+  ): void {
+    const now = new Date().toISOString();
+    if (lastSeenAt !== undefined) {
+      this.db
+        .prepare(
+          `UPDATE devices SET connectivity = ?, last_seen_at = ?, updated_at = ? WHERE id = ?`,
+        )
+        .run(connectivity, lastSeenAt, now, deviceId);
+    } else {
+      this.db
+        .prepare(`UPDATE devices SET connectivity = ?, updated_at = ? WHERE id = ?`)
+        .run(connectivity, now, deviceId);
+    }
+  }
+
+  updateDebouncedLiveSnapshotSystem(
+    deviceId: string,
+    patch: {
+      lastSeenAt: string | null;
+      latestMetrics: Record<string, number | boolean | string>;
+      latestHealth: DeviceHealthSnapshot;
+    },
+  ): void {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `UPDATE devices
+         SET last_seen_at = COALESCE(?, last_seen_at),
+             latest_metrics_json = ?,
+             latest_health_json = ?,
+             updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(
+        patch.lastSeenAt,
+        JSON.stringify(patch.latestMetrics),
+        JSON.stringify(patch.latestHealth),
+        now,
+        deviceId,
+      );
+  }
+
+  incrementInvalidPayloadCountSystem(deviceId: string): number {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `UPDATE devices
+         SET invalid_payload_count = invalid_payload_count + 1, updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(now, deviceId);
+    const row = this.db
+      .prepare('SELECT invalid_payload_count FROM devices WHERE id = ?')
+      .get(deviceId) as { invalid_payload_count: number } | undefined;
+    return Number(row?.invalid_payload_count ?? 0);
+  }
+
+  updateConfigStatusSystem(
+    deviceId: string,
+    patch: { version: number; status: 'APPLIED' | 'FAILED'; error: string | null },
+  ): DeviceRecord | null {
+    const existing = this.findByIdSystem(deviceId);
+    if (!existing) return null;
+
+    const nextConfig: DeviceConfigState = {
+      ...existing.config,
+      version: patch.version,
+      status: patch.status,
+      error: patch.error,
+    };
+    const now = new Date().toISOString();
+    this.db
+      .prepare('UPDATE devices SET config_json = ?, updated_at = ? WHERE id = ?')
+      .run(JSON.stringify(nextConfig), now, deviceId);
+    return this.findByIdSystem(deviceId);
+  }
+
+  assignConfigSystem(deviceId: string, config: DeviceConfigState): DeviceRecord | null {
+    const existing = this.findByIdSystem(deviceId);
+    if (!existing) return null;
+    const now = new Date().toISOString();
+    this.db
+      .prepare('UPDATE devices SET config_json = ?, updated_at = ? WHERE id = ?')
+      .run(JSON.stringify(config), now, deviceId);
+    return this.findByIdSystem(deviceId);
+  }
+
+  updateFirmwareVersionSystem(deviceId: string, firmwareVersion: string): DeviceRecord | null {
+    const existing = this.findByIdSystem(deviceId);
+    if (!existing) return null;
+    const now = new Date().toISOString();
+    this.db
+      .prepare('UPDATE devices SET firmware_version = ?, updated_at = ? WHERE id = ?')
+      .run(firmwareVersion.trim(), now, deviceId);
+    return this.findByIdSystem(deviceId);
+  }
+
+  listDistinctModelIdsInTenantSystem(tenantId: string): string[] {
+    const rows = this.db
+      .prepare('SELECT DISTINCT model_id FROM devices WHERE tenant_id = ?')
+      .all(tenantId) as Array<{ model_id: string }>;
+    return rows.map((r) => r.model_id);
+  }
+
   countByTenant(): Map<string, { total: number; online: number; active: number }> {
     const rows = this.db
       .prepare(

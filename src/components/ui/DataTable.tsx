@@ -98,7 +98,7 @@ export function DataTable<T>({
                       <button
                         type="button"
                         onClick={() => handleSort(col.sortKey!)}
-                        className="inline-flex items-center gap-1 hover:text-slate-900 cursor-pointer"
+                        className="inline-flex items-center gap-1 rounded px-1 -mx-1 hover:text-slate-900 cursor-pointer"
                       >
                         <span>{col.header}</span>
                         {isSorted ? (
@@ -108,7 +108,7 @@ export function DataTable<T>({
                             <ArrowDown className="w-3.5 h-3.5 text-indigo-600" />
                           )
                         ) : (
-                          <ArrowUpDown className="w-3.5 h-3.5 text-slate-400" />
+                          <ArrowUpDown className="w-3.5 h-3.5 text-slate-500" />
                         )}
                       </button>
                     ) : (
@@ -137,8 +137,22 @@ export function DataTable<T>({
                     <React.Fragment key={id}>
                       <tr
                         onClick={onRowClick ? () => onRowClick(row) : undefined}
+                        onKeyDown={
+                          onRowClick
+                            ? (e) => {
+                                if (e.key === 'Enter' || e.key === ' ') {
+                                  if ((e.target as HTMLElement).closest('a,button,input,select')) return;
+                                  e.preventDefault();
+                                  onRowClick(row);
+                                }
+                              }
+                            : undefined
+                        }
+                        tabIndex={onRowClick ? 0 : undefined}
                         className={`transition-colors ${
-                          onRowClick ? 'hover:bg-slate-50 cursor-pointer' : 'hover:bg-slate-50/60'
+                          onRowClick
+                            ? 'hover:bg-slate-50 focus-visible:bg-indigo-50/40 cursor-pointer'
+                            : 'hover:bg-slate-50/60'
                         }`}
                       >
                         {columns.map((col) => (
@@ -182,13 +196,25 @@ export function DataTable<T>({
                 <div
                   key={id}
                   onClick={onRowClick ? () => onRowClick(row) : undefined}
+                  onKeyDown={
+                    onRowClick
+                      ? (e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            if ((e.target as HTMLElement).closest('a,button,input,select')) return;
+                            e.preventDefault();
+                            onRowClick(row);
+                          }
+                        }
+                      : undefined
+                  }
+                  tabIndex={onRowClick ? 0 : undefined}
                   className={`p-4 space-y-2 ${onRowClick ? 'cursor-pointer active:bg-slate-50' : ''}`}
                 >
                   {columns
                     .filter((c) => !c.hideOnMobile)
                     .map((col) => (
                       <div key={col.key} className="flex items-start justify-between gap-3 text-sm">
-                        <span className="text-xs font-medium text-slate-500 shrink-0">
+                        <span className="text-xs font-medium text-slate-600 shrink-0">
                           {col.header}
                         </span>
                         <div className="text-right min-w-0">{col.render(row)}</div>

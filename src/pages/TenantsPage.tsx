@@ -296,6 +296,18 @@ export function TenantsPage() {
           <Button type="submit" variant="secondary" icon={<Search className="w-4 h-4" />}>
             Filter
           </Button>
+          {(q || status) && (
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                setSearchInput('');
+                updateParams({ q: null, status: null, page: '1' });
+              }}
+            >
+              Clear
+            </Button>
+          )}
         </form>
       </Card>
 
@@ -319,11 +331,28 @@ export function TenantsPage() {
         }
         onRetry={() => void tenantsQuery.refetch()}
         emptyTitle="No client organizations found"
-        emptyDescription="Create your first client organization to onboard devices and users."
+        emptyDescription={
+          q || status
+            ? 'No client organizations match the active filters.'
+            : 'Create your first client organization to onboard devices and users.'
+        }
         emptyAction={
-          <Button icon={<Plus className="w-4 h-4" />} onClick={() => setCreateOpen(true)}>
-            New tenant
-          </Button>
+          q || status ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setSearchInput('');
+                updateParams({ q: null, status: null, page: '1' });
+              }}
+            >
+              Clear filters
+            </Button>
+          ) : (
+            <Button icon={<Plus className="w-4 h-4" />} onClick={() => setCreateOpen(true)}>
+              New tenant
+            </Button>
+          )
         }
       />
 

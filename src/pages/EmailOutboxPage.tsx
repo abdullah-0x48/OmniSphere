@@ -6,6 +6,7 @@ import type { EmailOutboxItem, PaginatedResponse } from '../../shared/types.ts';
 import { ApiClientError, apiRequest } from '../api/client.ts';
 import { useAuth } from '../auth/AuthContext.tsx';
 import {
+  Button,
   Card,
   DataTable,
   Drawer,
@@ -35,13 +36,34 @@ function stripHtmlToLines(html: string): string[] {
     .filter(Boolean);
 }
 
-function extractSafeInternalPath(html: string): string | null {
+function extractSafeInternalPath(html: string): { path: string; label: string } | null {
   const match = /href="([^"]+)"/i.exec(html);
   if (!match) return null;
   try {
     const parsed = new URL(match[1], window.location.origin);
     if (parsed.pathname.startsWith('/reset-password/')) {
-      return parsed.pathname;
+      return { path: parsed.pathname, label: 'Open Password Reset Link' };
+    }
+    if (parsed.pathname === '/alerts') {
+      return { path: `${parsed.pathname}${parsed.search}`, label: 'Open Alert in OmniSphere' };
+    }
+    if (parsed.pathname.startsWith('/devices/')) {
+      return { path: parsed.pathname, label: 'Open Device' };
+    }
+    if (parsed.pathname.startsWith('/tickets/')) {
+      return { path: parsed.pathname, label: 'Open Ticket' };
+    }
+    if (parsed.pathname.startsWith('/work-orders/')) {
+      return { path: parsed.pathname, label: 'Open Work Order' };
+    }
+    if (parsed.pathname === '/my-work-orders') {
+      return { path: parsed.pathname, label: 'Open My Work Orders' };
+    }
+    if (parsed.pathname === '/approvals') {
+      return { path: `${parsed.pathname}${parsed.search}`, label: 'Open Approvals Center' };
+    }
+    if (parsed.pathname.startsWith('/rollouts/')) {
+      return { path: parsed.pathname, label: 'Open Rollout' };
     }
   } catch {
     return null;
@@ -159,7 +181,30 @@ export function EmailOutboxPage() {
         onRetry={() => void outboxQuery.refetch()}
         onRowClick={(e) => setSelected(e)}
         emptyTitle="No outbound emails yet"
-        emptyDescription="Password reset links and operational notifications will appear here once triggered."
+        emptyDescription={
+          status
+            ? 'No emails match the selected delivery status.'
+            : 'Password reset links and operational notifications will appear here once triggered.'
+        }
+        emptyAction={
+          status ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => updateParams({ status: null, page: '1' })}
+            >
+              Clear filter
+            </Button>
+          ) : (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void outboxQuery.refetch()}
+            >
+              Refresh
+            </Button>
+          )
+        }
       />
 
       <Drawer
@@ -198,11 +243,11 @@ export function EmailOutboxPage() {
             {internalLink && (
               <div className="pt-2">
                 <Link
-                  to={internalLink}
+                  to={internalLink.path}
                   onClick={() => setSelected(null)}
                   className="inline-flex items-center justify-center h-9 px-4 rounded-lg bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 transition-colors"
                 >
-                  Open Password Reset Link
+                  {internalLink.label}
                 </Link>
               </div>
             )}

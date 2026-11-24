@@ -144,6 +144,20 @@ export function TenantDetailPage() {
     },
   });
 
+  if (tenantQuery.isLoading) {
+    return (
+      <div className="space-y-6" aria-busy="true" aria-label="Loading organization">
+        <div className="space-y-2">
+          <div className="h-4 w-32 bg-slate-200 rounded animate-pulse" />
+          <div className="h-7 w-64 bg-slate-200 rounded animate-pulse" />
+          <div className="h-4 w-96 max-w-full bg-slate-200 rounded animate-pulse" />
+        </div>
+        <div className="h-10 w-80 bg-slate-200 rounded-lg animate-pulse" />
+        <div className="h-72 max-w-2xl bg-white border border-slate-200 rounded-xl animate-pulse" />
+      </div>
+    );
+  }
+
   if (tenantQuery.isError) {
     return (
       <ErrorState
@@ -353,8 +367,21 @@ export function TenantDetailPage() {
             pageSize={50}
             onPageChange={() => {}}
             isLoading={usersQuery.isLoading}
+            error={
+              usersQuery.isError
+                ? usersQuery.error instanceof ApiClientError
+                  ? usersQuery.error.message
+                  : 'Unable to load users.'
+                : null
+            }
+            onRetry={() => void usersQuery.refetch()}
             emptyTitle="No users in this organization"
             emptyDescription="Add a Client Admin so this organization can onboard staff."
+            emptyAction={
+              <Button size="sm" icon={<Plus className="w-4 h-4" />} onClick={() => setAddAdminOpen(true)}>
+                Add Client Admin
+              </Button>
+            }
           />
         </div>
       )}
@@ -369,8 +396,21 @@ export function TenantDetailPage() {
           pageSize={25}
           onPageChange={() => {}}
           isLoading={auditQuery.isLoading}
+          error={
+            auditQuery.isError
+              ? auditQuery.error instanceof ApiClientError
+                ? auditQuery.error.message
+                : 'Unable to load audit events.'
+              : null
+          }
+          onRetry={() => void auditQuery.refetch()}
           emptyTitle="No audit events yet"
           emptyDescription="Activity scoped to this tenant will appear here."
+          emptyAction={
+            <Button size="sm" variant="secondary" onClick={() => void auditQuery.refetch()}>
+              Refresh
+            </Button>
+          }
         />
       )}
 

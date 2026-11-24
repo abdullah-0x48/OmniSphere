@@ -1,4 +1,5 @@
 import { Router, type RequestHandler } from 'express';
+import type { AppRuntime } from '../app.ts';
 import { config } from '../config.ts';
 import { requireRole } from '../middleware/rbac.ts';
 import { asyncHandler } from '../middleware/validate.ts';
@@ -11,6 +12,7 @@ export function createPlatformRouter(
   tenantService: TenantService,
   repos: Repositories,
   requireAuth: RequestHandler,
+  runtime?: AppRuntime,
 ): Router {
   const router = Router();
   router.use(requireAuth);
@@ -37,6 +39,8 @@ export function createPlatformRouter(
         actorRole: req.authUser!.role,
         ip: req.clientIp,
       });
+      runtime?.liveState.rebuildFromDatabase();
+      runtime?.simulator.syncFromDatabase();
       res.status(200).json({ ok: true, ...result });
     }),
   );

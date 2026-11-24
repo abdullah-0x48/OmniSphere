@@ -12,6 +12,7 @@ import { ApiClientError, apiRequest } from '../api/client.ts';
 import { useAuth } from '../auth/AuthContext.tsx';
 import {
   Button,
+  Card,
   DataTable,
   IconButton,
   Input,
@@ -247,7 +248,7 @@ export function DeviceModelsPage() {
           {m.metrics.map((metric) => (
             <div key={metric.key} className="text-xs text-slate-700 flex items-center gap-1.5 flex-wrap">
               <span className="font-mono font-medium text-slate-900">{metric.key}</span>
-              <span className="text-slate-400">({metric.type}{metric.unit ? `, ${metric.unit}` : ''})</span>
+              <span className="text-slate-500">({metric.type}{metric.unit ? `, ${metric.unit}` : ''})</span>
               {metric.type === 'number' && (metric.min !== null || metric.max !== null) && (
                 <span className="font-mono text-[11px] text-slate-500">
                   [{metric.min ?? '−∞'}..{metric.max ?? '+∞'}]
@@ -281,7 +282,7 @@ export function DeviceModelsPage() {
   }
 
   return (
-    <div>
+    <div className="space-y-6">
       <PageHeader
         title="Device Models"
         description="Global catalogue of hardware models, supported firmware families, and telemetry metric schemas."
@@ -294,28 +295,43 @@ export function DeviceModelsPage() {
         }
       />
 
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          updateParams({ q: searchInput.trim() || null, page: '1' });
-        }}
-        className="mb-4 flex items-center gap-2 max-w-md"
-      >
-        <div className="relative flex-1">
-          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-          <input
-            type="search"
-            aria-label="Search device models"
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-            placeholder="Search by model name, manufacturer, or firmware family..."
-            className="w-full h-9 pl-9 pr-3 rounded-lg border border-slate-300 bg-white text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600"
-          />
-        </div>
-        <Button type="submit" variant="secondary" size="sm">
-          Search
-        </Button>
-      </form>
+      <Card className="p-4">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            updateParams({ q: searchInput.trim() || null, page: '1' });
+          }}
+          className="flex flex-wrap items-center gap-2 max-w-lg"
+        >
+          <div className="relative flex-1 min-w-[200px]">
+            <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              type="search"
+              aria-label="Search device models"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              placeholder="Search by model name, manufacturer, or firmware family..."
+              className="w-full h-9 pl-9 pr-3 rounded-lg border border-slate-300 bg-white text-sm text-slate-900 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600"
+            />
+          </div>
+          <Button type="submit" variant="secondary" size="sm">
+            Search
+          </Button>
+          {q && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setSearchInput('');
+                updateParams({ q: null, page: '1' });
+              }}
+            >
+              Clear
+            </Button>
+          )}
+        </form>
+      </Card>
 
       <DataTable
         columns={columns}
@@ -331,7 +347,29 @@ export function DeviceModelsPage() {
         error={modelsQuery.error instanceof Error ? modelsQuery.error.message : null}
         onRetry={() => void modelsQuery.refetch()}
         emptyTitle="No device models defined"
-        emptyDescription="Add a device model to define telemetry metrics and onboard hardware."
+        emptyDescription={
+          q
+            ? 'No device models match your search query.'
+            : 'Add a device model to define telemetry metrics and onboard hardware.'
+        }
+        emptyAction={
+          q ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setSearchInput('');
+                updateParams({ q: null, page: '1' });
+              }}
+            >
+              Clear search
+            </Button>
+          ) : canWrite ? (
+            <Button size="sm" onClick={openCreate} icon={<Plus className="w-4 h-4" />}>
+              New Device Model
+            </Button>
+          ) : undefined
+        }
       />
 
       <Modal

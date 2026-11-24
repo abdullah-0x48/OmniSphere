@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { PauseCircle, Plus, Search, Tag, Upload, X } from 'lucide-react';
+import { PauseCircle, Plus, Rocket, Search, Send, Tag, Upload, X } from 'lucide-react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ALL_DEVICE_STATES,
   type BulkDeviceActionResult,
+  type ConfigProfilePublic,
+  type ConfigPushResponse,
   type DeviceModel,
   type DeviceProvisioningPayload,
   type DevicePublic,
@@ -62,6 +64,8 @@ export function DevicesPage() {
   const [bulkTagValue, setBulkTagValue] = useState('');
   const [bulkSuspendOpen, setBulkSuspendOpen] = useState(false);
   const [bulkSuspendReason, setBulkSuspendReason] = useState('');
+  const [bulkConfigOpen, setBulkConfigOpen] = useState(false);
+  const [bulkConfigProfileId, setBulkConfigProfileId] = useState('');
 
   useEffect(() => {
     setSearchInput(q);
@@ -133,6 +137,48 @@ export function DevicesPage() {
   const tagsQuery = useQuery({
     queryKey: ['device-tags', activeTenantId],
     queryFn: () => apiRequest<{ items: string[] }>('/devices/tags'),
+  });
+
+  const configProfilesQuery = useQuery({
+    queryKey: ['devices-bulk-config-profiles', activeTenantId],
+    enabled: canWrite && bulkConfigOpen,
+    queryFn: () =>
+      apiRequest<PaginatedResponse<ConfigProfilePublic>>('/config-profiles', {
+        query: { page: 1, pageSize: 200 },
+      }),
+  });
+
+  const bulkConfigMutation = useMutation({
+    mutationFn: (vars: { profileId: string; deviceIds: string[] }) =>
+      apiRequest<ConfigPushResponse>(`/config-profiles/${vars.profileId}/push`, {
+        method: 'POST',
+        body: {
+          targetType: 'DEVICE',
+          targetValue: vars.deviceIds.join(','),
+          deviceIds: vars.deviceIds,
+        },
+      }),
+    onSuccess: (res) => {
+      toast({
+        kind: res.queuedCount > 0 ? 'success' : 'info',
+        title: `Pushed config v${res.version} to ${res.queuedCount} device(s)`,
+        description:
+          res.skippedCount > 0
+            ? `${res.skippedCount} device(s) skipped (different model or decommissioned).`
+            : undefined,
+      });
+      setBulkConfigOpen(false);
+      setBulkConfigProfileId('');
+      setSelectedIds([]);
+      void queryClient.invalidateQueries({ queryKey: ['devices'] });
+    },
+    onError: (err) => {
+      toast({
+        kind: 'error',
+        title: 'Bulk config push failed',
+        description: err instanceof ApiClientError ? err.message : 'Unable to push configuration.',
+      });
+    },
   });
 
   const bulkMutation = useMutation({
@@ -235,7 +281,7 @@ export function DevicesPage() {
       hideOnMobile: true,
       render: (d) =>
         d.tags.length === 0 ? (
-          <span className="text-xs text-slate-400">—</span>
+          <span className="text-xs text-slate-500">—</span>
         ) : (
           <div className="flex items-center gap-1 flex-wrap">
             {d.tags.slice(0, 2).map((t) => (
@@ -262,21 +308,7 @@ export function DevicesPage() {
       key: 'connectivity',
       header: 'Connectivity',
       sortKey: 'connectivity',
-      render: (d) => (
-        <span className="inline-flex items-center gap-1.5">
-          <span
-            className={`w-2 h-2 rounded-full ${
-              d.connectivity === 'ONLINE'
-                ? 'bg-emerald-500'
-                : d.connectivity === 'OFFLINE'
-                  ? 'bg-red-500'
-                  : 'bg-slate-400'
-            }`}
-            aria-hidden="true"
-          />
-          <StatusChip status={d.connectivity} />
-        </span>
-      ),
+      render: (d) => <StatusChip status={d.connectivity} />,
     },
     {
       key: 'firmwareVersion',
@@ -297,7 +329,7 @@ export function DevicesPage() {
   );
 
   return (
-    <div>
+    <div className="space-y-6">
       <PageHeader
         title="Device Inventory"
         description="Search, filter, register, and manage industrial IoT devices across sites."
@@ -323,7 +355,7 @@ export function DevicesPage() {
       />
 
       {/* Filters Toolbar */}
-      <div className="bg-white border border-slate-200 rounded-xl p-4 mb-4 space-y-3">
+      <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-3">
         <div className="flex flex-col lg:flex-row gap-3">
           <form
             onSubmit={(e) => {
@@ -333,14 +365,14 @@ export function DevicesPage() {
             className="flex items-center gap-2 flex-1"
           >
             <div className="relative flex-1">
-              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
                 type="search"
                 aria-label="Search devices"
                 value={searchInput}
                 onChange={(e) => setSearchInput(e.target.value)}
                 placeholder="Search by name, serial number, hardware ID, or device ID..."
-                className="w-full h-9 pl-9 pr-3 rounded-lg border border-slate-300 bg-white text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600"
+                className="w-full h-9 pl-9 pr-3 rounded-lg border border-slate-300 bg-white text-sm text-slate-900 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600"
               />
             </div>
             <Button type="submit" variant="secondary" size="sm">
@@ -441,7 +473,7 @@ export function DevicesPage() {
 
       {/* Contextual Bulk Action Bar (CA & SE) */}
       {canWrite && selectedIds.length > 0 && (
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-2.5 text-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-2.5 text-sm">
           <div className="flex items-center gap-3">
             <span className="font-semibold text-indigo-900 font-mono tabular-nums">
               {selectedIds.length} selected
@@ -454,7 +486,7 @@ export function DevicesPage() {
               {allVisibleSelected ? 'Deselect page' : `Select all ${rows.length} on page`}
             </button>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <Button
               variant="secondary"
               size="sm"
@@ -462,6 +494,27 @@ export function DevicesPage() {
               icon={<Tag className="w-3.5 h-3.5" />}
             >
               Add Tag
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setBulkConfigProfileId('');
+                setBulkConfigOpen(true);
+              }}
+              icon={<Send className="w-3.5 h-3.5" />}
+            >
+              Push Config
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() =>
+                navigate(`/rollouts?create=1&deviceIds=${encodeURIComponent(selectedIds.join(','))}`)
+              }
+              icon={<Rocket className="w-3.5 h-3.5" />}
+            >
+              Create Rollout
             </Button>
             <Button
               variant="secondary"
@@ -492,10 +545,25 @@ export function DevicesPage() {
         error={devicesQuery.error instanceof Error ? devicesQuery.error.message : null}
         onRetry={() => void devicesQuery.refetch()}
         onRowClick={(d) => navigate(`/devices/${d.id}`)}
-        emptyTitle="No devices match your filters"
-        emptyDescription="Adjust your search filters or register a new device to populate the inventory."
+        emptyTitle={hasActiveFilters ? 'No devices match your filters' : 'No devices registered yet'}
+        emptyDescription={
+          hasActiveFilters
+            ? 'Adjust or clear your active search filters to see more devices.'
+            : 'Register a new device or import a CSV to populate your fleet inventory.'
+        }
         emptyAction={
-          canWrite ? (
+          hasActiveFilters ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setSearchInput('');
+                setSearchParams(new URLSearchParams(), { replace: true });
+              }}
+            >
+              Clear filters
+            </Button>
+          ) : canWrite ? (
             <Button onClick={() => setRegisterOpen(true)} icon={<Plus className="w-4 h-4" />}>
               Register Device
             </Button>
@@ -569,6 +637,49 @@ export function DevicesPage() {
           placeholder="e.g. phase-2"
           hint="Lowercase alphanumeric tag appended to each non-decommissioned device."
         />
+      </Modal>
+
+      {/* Bulk Push Config Modal */}
+      <Modal
+        open={bulkConfigOpen}
+        onClose={() => setBulkConfigOpen(false)}
+        title={`Push Configuration to ${selectedIds.length} Device(s)`}
+        description="Devices matching the selected profile's model will be queued; other models will be skipped safely."
+        size="sm"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setBulkConfigOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              loading={bulkConfigMutation.isPending}
+              disabled={!bulkConfigProfileId}
+              onClick={() =>
+                bulkConfigMutation.mutate({
+                  profileId: bulkConfigProfileId,
+                  deviceIds: selectedIds,
+                })
+              }
+              icon={<Send className="w-3.5 h-3.5" />}
+            >
+              Push Config
+            </Button>
+          </>
+        }
+      >
+        <Select
+          label="Configuration Profile"
+          required
+          value={bulkConfigProfileId}
+          onChange={(e) => setBulkConfigProfileId(e.target.value)}
+        >
+          <option value="">Select profile...</option>
+          {(configProfilesQuery.data?.items ?? []).map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name} (v{p.version}) — {p.modelName ?? p.modelId}
+            </option>
+          ))}
+        </Select>
       </Modal>
 
       {/* Bulk Suspend Modal */}

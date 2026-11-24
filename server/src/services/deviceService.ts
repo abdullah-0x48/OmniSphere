@@ -1,24 +1,39 @@
 import type {
   BulkDeviceActionResult,
+  DeviceCommandPublic,
+  DeviceCommandType,
   DeviceDetail,
   DeviceImportResponse,
   DeviceImportRowInput,
   DeviceImportRowResult,
   DeviceLifecycleAction,
+  DeviceLiveState,
   DeviceProvisioningPayload,
   DevicePublic,
   DeviceRegistrationResponse,
+  DeviceTelemetryResponse,
   DeviceTimelineEvent,
+  RoleCode,
+  TelemetryPoint,
+  TelemetryRange,
+  TelemetrySample,
 } from '../../../shared/types.ts';
 import { config } from '../config.ts';
 import {
   toDevicePublic,
   type DeviceListFilter,
+  type IAlertRepository,
   type IAuditRepository,
+  type IConfigProfileRepository,
+  type IDeviceCommandRepository,
   type IDeviceModelRepository,
   type IDeviceRepository,
+  type IRolloutRepository,
   type ISiteRepository,
+  type ITelemetryRepository,
   type ITenantRepository,
+  type ITicketRepository,
+  type IWorkOrderRepository,
   type TenantContext,
 } from '../repositories/types.ts';
 import { Errors } from '../utils/errors.ts';
@@ -30,6 +45,12 @@ import {
   getAllowedTransitionsForActor,
   validateLifecycleTransition,
 } from './deviceLifecycle.ts';
+import type { LiveStateStore } from './liveStateStore.ts';
+import {
+  buildDownsampledSeries,
+  downsamplePoints,
+  rangeToDurationMs,
+} from './telemetryValidation.ts';
 
 function normalizeTags(rawTags: string[] | undefined): string[] {
   if (!rawTags) return [];
@@ -50,6 +71,9 @@ function parseTagString(raw: string | undefined): string[] {
 }
 
 export class DeviceService {
+  private onDeviceSuppressed: ((deviceId: string) => void) | null = null;
+  private onDeviceDecommissioned: ((deviceId: string) => void) | null = null;
+
   constructor(
     private readonly devices: IDeviceRepository,
     private readonly sites: ISiteRepository,
@@ -57,7 +81,23 @@ export class DeviceService {
     private readonly tenants: ITenantRepository,
     private readonly auditRepo: IAuditRepository,
     private readonly audit: AuditService,
+    private readonly liveState?: LiveStateStore,
+    private readonly telemetryRepo?: ITelemetryRepository,
+    private readonly commandsRepo?: IDeviceCommandRepository,
+    private readonly alertsRepo?: IAlertRepository,
+    private readonly ticketsRepo?: ITicketRepository,
+    private readonly workOrdersRepo?: IWorkOrderRepository,
+    private readonly configProfilesRepo?: IConfigProfileRepository,
+    private readonly rolloutsRepo?: IRolloutRepository,
   ) {}
+
+  setOnDeviceSuppressed(handler: (deviceId: string) => void): void {
+    this.onDeviceSuppressed = handler;
+  }
+
+  setOnDeviceDecommissioned(handler: (deviceId: string) => void): void {
+    this.onDeviceDecommissioned = handler;
+  }
 
   private resolveWriteTenantId(ctx: TenantContext): string {
     if (ctx.activeTenantId) {
@@ -86,7 +126,12 @@ export class DeviceService {
   }
 
   list(ctx: TenantContext, filter: DeviceListFilter): { items: DevicePublic[]; total: number } {
-    return this.devices.list(ctx, filter);
+    const res = this.devices.list(ctx, filter);
+    if (!this.liveState) return res;
+    return {
+      items: res.items.map((d) => this.liveState!.mergeIntoDevice(d)),
+      total: res.total,
+    };
   }
 
   listDistinctTags(ctx: TenantContext): string[] {
@@ -99,16 +144,201 @@ export class DeviceService {
       throw Errors.notFound('Device not found');
     }
 
+    const basePublic = toDevicePublic(record);
+    const merged = this.liveState ? this.liveState.mergeIntoDevice(basePublic) : basePublic;
     const model = this.models.findById(record.modelId);
     const site = this.sites.findById(ctx, record.siteId);
-    const allowedTransitions = getAllowedTransitionsForActor(record.state, ctx.role);
+    const allowedTransitions = getAllowedTransitionsForActor(merged.state, ctx.role);
+
+    let configProfileName: string | null = null;
+    let configProfilePayload: Record<string, unknown> | null = null;
+    if (merged.config.profileId && this.configProfilesRepo) {
+      const prof = this.configProfilesRepo.findByIdSystem(merged.config.profileId);
+      if (prof) {
+        configProfileName = prof.name;
+        const ver =
+          merged.config.version !== null
+            ? this.configProfilesRepo.findVersionSystem(prof.id, merged.config.version)
+            : null;
+        configProfilePayload = ver ? ver.payload : prof.payload;
+      }
+    }
+
+    const recentConfigCommands = this.commandsRepo
+      ? this.commandsRepo
+          .listByDevice(ctx, record.id, record.tenantId)
+          .filter((c) => c.type === 'APPLY_CONFIG')
+      : [];
+    const recentRolloutJobs = this.rolloutsRepo
+      ? this.rolloutsRepo.listJobsByDevice(ctx, record.id, 30)
+      : [];
 
     return {
-      ...toDevicePublic(record),
+      ...merged,
       model,
       site,
       allowedTransitions,
+      configProfileName,
+      configProfilePayload,
+      recentConfigCommands,
+      recentRolloutJobs,
     };
+  }
+
+  getLive(ctx: TenantContext, id: string): DeviceLiveState {
+    const record = this.devices.findById(ctx, id);
+    if (!record) {
+      throw Errors.notFound('Device not found');
+    }
+    const merged = this.liveState
+      ? this.liveState.mergeIntoDevice(toDevicePublic(record))
+      : toDevicePublic(record);
+    return {
+      deviceId: merged.id,
+      tenantId: merged.tenantId,
+      state: merged.state,
+      connectivity: merged.connectivity,
+      lastSeenAt: merged.lastSeenAt,
+      firmwareVersion: merged.firmwareVersion,
+      latestMetrics: merged.latestMetrics,
+      latestHealth: merged.latestHealth,
+      invalidPayloadCount: merged.invalidPayloadCount,
+    };
+  }
+
+  getTelemetry(
+    ctx: TenantContext,
+    id: string,
+    options: { metric?: string; range: TelemetryRange },
+  ): DeviceTelemetryResponse {
+    const record = this.devices.findById(ctx, id);
+    if (!record) {
+      throw Errors.notFound('Device not found');
+    }
+
+    const model = this.models.findById(record.modelId);
+    const allMetricDefs = model?.metrics ?? [];
+    const targetDefs = options.metric
+      ? allMetricDefs.filter((m) => m.key === options.metric)
+      : allMetricDefs;
+
+    if (options.metric && targetDefs.length === 0) {
+      throw Errors.validation(`Metric "${options.metric}" does not exist on this device model`, {
+        field: 'metric',
+      });
+    }
+
+    const nowMs = Date.now();
+    const durationMs = rangeToDurationMs(options.range);
+    const fromMs = nowMs - durationMs;
+    // Start bucket scan 10 minutes earlier so samples inside the boundary bucket aren't missed
+    const bucketFromIso = new Date(fromMs - 600_000).toISOString();
+    const toIso = new Date(nowMs).toISOString();
+
+    const buckets = this.telemetryRepo
+      ? this.telemetryRepo.queryBucketsInRange(ctx, id, record.tenantId, bucketFromIso, toIso)
+      : [];
+
+    const buffered = this.liveState ? this.liveState.getBufferedSamples(id) : [];
+
+    // Combine persisted bucket samples + live buffered samples, deduplicated by timestamp
+    const sampleByTs = new Map<string, TelemetrySample>();
+    for (const b of buckets) {
+      for (const s of b.samples) {
+        sampleByTs.set(s.ts, s);
+      }
+    }
+    for (const s of buffered) {
+      sampleByTs.set(s.ts, s);
+    }
+
+    const allSamples = Array.from(sampleByTs.values());
+    const metricKeys = targetDefs.map((m) => m.key);
+    const series = buildDownsampledSeries(allSamples, metricKeys, fromMs, nowMs, 300);
+
+    // Build down-sampled health time series as well
+    const sortedInWindow = allSamples
+      .filter((s) => {
+        const t = Date.parse(s.ts);
+        return Number.isFinite(t) && t >= fromMs && t <= nowMs;
+      })
+      .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+
+    const extractHealthSeries = (
+      field: 'cpuLoad' | 'memoryUsage' | 'batteryLevel' | 'signalStrength',
+    ): TelemetryPoint[] => {
+      const pts: TelemetryPoint[] = [];
+      for (const s of sortedInWindow) {
+        const val = s.health?.[field];
+        if (typeof val === 'number' && Number.isFinite(val)) {
+          pts.push({ ts: s.ts, value: val });
+        }
+      }
+      return downsamplePoints(pts, 300);
+    };
+
+    const healthSeries = {
+      cpuLoad: extractHealthSeries('cpuLoad'),
+      memoryUsage: extractHealthSeries('memoryUsage'),
+      batteryLevel: extractHealthSeries('batteryLevel'),
+      signalStrength: extractHealthSeries('signalStrength'),
+    };
+
+    return {
+      deviceId: record.id,
+      range: options.range,
+      from: new Date(fromMs).toISOString(),
+      to: toIso,
+      metrics: targetDefs,
+      series,
+      healthSeries,
+    };
+  }
+
+  enqueueCommand(
+    ctx: TenantContext,
+    id: string,
+    input: { type: DeviceCommandType },
+    ip: string,
+  ): DeviceCommandPublic {
+    if (!this.commandsRepo) {
+      throw Errors.internal('Device commands repository not configured');
+    }
+
+    const existing = this.devices.findById(ctx, id);
+    if (!existing) {
+      throw Errors.notFound('Device not found');
+    }
+
+    const currentState = this.liveState?.get(id)?.state ?? existing.state;
+    if (currentState !== 'ACTIVE' && currentState !== 'UNDER_MAINTENANCE') {
+      throw Errors.invalidTransition(
+        `Cannot send ${input.type} command while device is in ${currentState} state`,
+        { currentState },
+      );
+    }
+
+    const command = this.commandsRepo.create(ctx, {
+      id: generateId('cmd'),
+      tenantId: existing.tenantId,
+      deviceId: existing.id,
+      type: input.type,
+      createdBy: ctx.userId,
+    });
+
+    this.audit.record({
+      actorId: ctx.userId,
+      actorRole: ctx.role,
+      tenantId: existing.tenantId,
+      action: 'DEVICE_COMMAND_QUEUED',
+      targetType: 'DEVICE',
+      targetId: existing.id,
+      outcome: 'SUCCESS',
+      ip,
+      details: { commandId: command.id, type: command.type },
+    });
+
+    return command;
   }
 
   register(
@@ -164,6 +394,35 @@ export class DeviceService {
     const tags = normalizeTags(input.tags);
     const now = new Date().toISOString();
 
+    // Validate optional initial configuration profile (Section 8.3 #5)
+    let initialConfig: DeviceDetail['config'] = {
+      profileId: null,
+      version: null,
+      status: 'NONE',
+      error: null,
+    };
+    let initialProfileName: string | null = null;
+    if (input.configProfileId && this.configProfilesRepo) {
+      const profile = this.configProfilesRepo.findById(ctx, input.configProfileId);
+      if (!profile || profile.tenantId !== tenantId) {
+        throw Errors.validation('Selected configuration profile does not exist in this organization', {
+          field: 'configProfileId',
+        });
+      }
+      if (profile.modelId !== model.id) {
+        throw Errors.validation('Selected configuration profile does not match the device model', {
+          field: 'configProfileId',
+        });
+      }
+      initialConfig = {
+        profileId: profile.id,
+        version: profile.version,
+        status: 'PENDING',
+        error: null,
+      };
+      initialProfileName = profile.name;
+    }
+
     try {
       const created = this.devices.createWithUniqueKeys(
         ctx,
@@ -180,14 +439,7 @@ export class DeviceService {
           connectivity: 'UNKNOWN',
           apiKeyHash,
           apiKeyLast4,
-          config: input.configProfileId
-            ? {
-                profileId: input.configProfileId,
-                version: null,
-                status: 'PENDING',
-                error: null,
-              }
-            : { profileId: null, version: null, status: 'NONE', error: null },
+          config: initialConfig,
         },
         {
           id: generateId('dsh'),
@@ -200,6 +452,21 @@ export class DeviceService {
           at: now,
         },
       );
+
+      if (initialConfig.profileId && this.commandsRepo) {
+        this.commandsRepo.create(ctx, {
+          id: generateId('cmd'),
+          tenantId,
+          deviceId: created.id,
+          type: 'APPLY_CONFIG',
+          payload: {
+            profileId: initialConfig.profileId,
+            profileName: initialProfileName,
+            version: initialConfig.version,
+          },
+          createdBy: ctx.userId,
+        });
+      }
 
       this.audit.record({
         actorId: ctx.userId,
@@ -220,8 +487,11 @@ export class DeviceService {
         },
       });
 
+      const publicDevice = toDevicePublic(created);
+      this.liveState?.syncDeviceRecord(publicDevice);
+
       return {
-        device: toDevicePublic(created),
+        device: publicDevice,
         provisioning: this.buildProvisioningPayload(created.id, apiKey, model.id, tenant.code),
       };
     } catch (err) {
@@ -570,6 +840,22 @@ export class DeviceService {
       throw Errors.notFound('Device not found');
     }
 
+    if (isDecommission) {
+      this.commandsRepo?.cancelPendingForDeviceSystem(updated.id);
+      this.onDeviceDecommissioned?.(updated.id);
+      this.liveState?.updateLifecycleState(updated.id, 'DECOMMISSIONED', 'OFFLINE');
+    } else {
+      this.liveState?.updateLifecycleState(updated.id, targetState);
+    }
+
+    if (
+      targetState === 'SUSPENDED' ||
+      targetState === 'UNDER_MAINTENANCE' ||
+      targetState === 'DECOMMISSIONED'
+    ) {
+      this.onDeviceSuppressed?.(updated.id);
+    }
+
     this.audit.record({
       actorId: ctx.userId,
       actorRole: ctx.role,
@@ -589,6 +875,86 @@ export class DeviceService {
     });
 
     return this.getDetail(ctx, updated.id);
+  }
+
+  /**
+   * System-initiated device lifecycle transition driven by Work Order start/complete (Section 5.3 & 8.5):
+   * - Start work order: ACTIVE -> UNDER_MAINTENANCE (alerts suppressed immediately)
+   * - Complete work order: UNDER_MAINTENANCE -> ACTIVE
+   */
+  transitionLifecycleForWorkOrderSystem(params: {
+    deviceId: string;
+    targetState: 'UNDER_MAINTENANCE' | 'ACTIVE';
+    reason: string;
+    actorId: string;
+    actorRole: RoleCode | 'SYSTEM';
+    ip: string;
+  }): boolean {
+    const sysCtx: TenantContext = {
+      userId: params.actorId,
+      role: 'PLATFORM_ADMIN',
+      allTenants: true,
+      tenantIds: [],
+      activeTenantId: null,
+    };
+
+    const existing = this.devices.findById(sysCtx, params.deviceId);
+    if (!existing) return false;
+
+    const currentState = this.liveState?.get(existing.id)?.state ?? existing.state;
+    if (params.targetState === 'UNDER_MAINTENANCE' && currentState !== 'ACTIVE') {
+      // Ensure suppression still applies if already under maintenance
+      if (currentState === 'UNDER_MAINTENANCE') {
+        this.liveState?.updateLifecycleState(existing.id, 'UNDER_MAINTENANCE');
+        this.onDeviceSuppressed?.(existing.id);
+      }
+      return false;
+    }
+    if (params.targetState === 'ACTIVE' && currentState !== 'UNDER_MAINTENANCE') {
+      return false;
+    }
+
+    const now = new Date().toISOString();
+    const updated = this.devices.transitionState(
+      sysCtx,
+      existing.id,
+      { state: params.targetState },
+      {
+        id: generateId('dsh'),
+        tenantId: existing.tenantId,
+        deviceId: existing.id,
+        from: currentState,
+        to: params.targetState,
+        reason: params.reason,
+        actorId: params.actorId,
+        at: now,
+      },
+    );
+    if (!updated) return false;
+
+    this.liveState?.updateLifecycleState(updated.id, params.targetState);
+    if (params.targetState === 'UNDER_MAINTENANCE') {
+      this.onDeviceSuppressed?.(updated.id);
+    }
+
+    this.audit.record({
+      actorId: params.actorId,
+      actorRole: params.actorRole,
+      tenantId: existing.tenantId,
+      action: 'DEVICE_STATE_CHANGED',
+      targetType: 'DEVICE',
+      targetId: updated.id,
+      outcome: 'SUCCESS',
+      ip: params.ip,
+      details: {
+        from: currentState,
+        to: params.targetState,
+        reason: params.reason,
+        source: 'WORK_ORDER',
+      },
+    });
+
+    return true;
   }
 
   bulkAction(
@@ -693,7 +1059,7 @@ export class DeviceService {
       });
     }
 
-    // Include non-duplicate audit events (updates, key regeneration)
+    // Include non-duplicate audit events (updates, key regeneration, config pushes, OTA)
     for (const a of auditRows) {
       if (
         a.action === 'DEVICE_REGISTERED' ||
@@ -702,19 +1068,152 @@ export class DeviceService {
       ) {
         continue;
       }
+      const isConfig =
+        a.action === 'CONFIG_PUSHED' ||
+        a.action === 'CONFIG_APPLIED' ||
+        a.action === 'CONFIG_FAILED';
+      const isFirmware = a.action === 'OTA_JOB_VERIFIED' || a.action === 'OTA_JOB_FAILED';
+      const description =
+        a.action === 'DEVICE_KEY_REGENERATED'
+          ? `API key rotated (ending in ••••${String(a.details.apiKeyLast4 ?? '')})`
+          : a.action === 'CONFIG_PUSHED'
+            ? `Pushed ${String(a.details.profileName ?? a.details.profileId ?? 'profile')} v${String(a.details.version ?? '?')}`
+            : a.action === 'CONFIG_APPLIED'
+              ? `Device applied configuration v${String(a.details.version ?? '?')}`
+              : a.action === 'CONFIG_FAILED'
+                ? `Configuration v${String(a.details.version ?? '?')} failed: ${String(a.details.error ?? 'Unknown error')}`
+                : a.action === 'OTA_JOB_VERIFIED'
+                  ? `Updated firmware ${String(a.details.fromVersion ?? '?')} → ${String(a.details.toVersion ?? '?')}`
+                  : a.action === 'OTA_JOB_FAILED'
+                    ? `Firmware update to ${String(a.details.toVersion ?? '?')} failed (${String(a.details.errorCode ?? 'ERROR')})`
+                    : 'Device metadata updated';
       events.push({
         id: a.id,
-        kind: 'AUDIT',
+        kind: isConfig ? 'CONFIG' : isFirmware ? 'FIRMWARE' : 'AUDIT',
         at: a.at,
         title: a.action.replaceAll('_', ' '),
-        description:
-          a.action === 'DEVICE_KEY_REGENERATED'
-            ? `API key rotated (ending in ••••${String(a.details.apiKeyLast4 ?? '')})`
-            : 'Device metadata updated',
+        description,
         actorId: a.actorId,
         actorName: a.actorName ?? a.actorEmail ?? a.actorId,
         metadata: a.details,
       });
+    }
+
+    // Include device alerts in timeline (Section 10.4)
+    const deviceAlerts = this.alertsRepo?.listByDevice(ctx, deviceId, 50) ?? [];
+    for (const al of deviceAlerts) {
+      events.push({
+        id: `alr_evt_${al.id}`,
+        kind: 'ALERT',
+        at: al.createdAt,
+        title: `[${al.severity}] Alert raised (${al.status})`,
+        description: al.message,
+        actorId: 'SYSTEM',
+        actorName: 'Alert Engine',
+        metadata: { alertId: al.id, severity: al.severity, status: al.status },
+      });
+      if (al.acknowledgedAt) {
+        events.push({
+          id: `alr_ack_${al.id}`,
+          kind: 'ALERT',
+          at: al.acknowledgedAt,
+          title: `Alert acknowledged`,
+          description: al.message,
+          actorId: al.acknowledgedBy ?? 'SYSTEM',
+          actorName: al.acknowledgedByName ?? al.acknowledgedBy ?? 'User',
+          metadata: { alertId: al.id },
+        });
+      }
+      if (al.closedAt) {
+        events.push({
+          id: `alr_cls_${al.id}`,
+          kind: 'ALERT',
+          at: al.closedAt,
+          title: `Alert closed`,
+          description: al.closeReason ?? al.message,
+          actorId: al.closedBy ?? 'SYSTEM',
+          actorName: al.closedByName ?? al.closedBy ?? 'Support Engineer',
+          metadata: { alertId: al.id },
+        });
+      }
+    }
+
+    // Include device tickets in timeline (Section 10.4)
+    const deviceTickets = this.ticketsRepo?.listByDevice(ctx, deviceId, 50) ?? [];
+    for (const tk of deviceTickets) {
+      events.push({
+        id: `tkt_evt_${tk.id}`,
+        kind: 'TICKET',
+        at: tk.createdAt,
+        title: `${tk.number} created (${tk.priority} · ${tk.status})`,
+        description: tk.title,
+        actorId: tk.createdBy,
+        actorName: tk.createdByName ?? tk.createdBy,
+        metadata: { ticketId: tk.id, number: tk.number, status: tk.status },
+      });
+      if (tk.resolvedAt) {
+        events.push({
+          id: `tkt_res_${tk.id}`,
+          kind: 'TICKET',
+          at: tk.resolvedAt,
+          title: `${tk.number} resolved`,
+          description: tk.rootCause ? `Root cause: ${tk.rootCause}` : tk.title,
+          actorId: tk.assigneeId ?? 'SYSTEM',
+          actorName: tk.assigneeName ?? 'Support Engineer',
+          metadata: { ticketId: tk.id, number: tk.number },
+        });
+      }
+      if (tk.closedAt) {
+        events.push({
+          id: `tkt_cls_${tk.id}`,
+          kind: 'TICKET',
+          at: tk.closedAt,
+          title: `${tk.number} closed`,
+          description: tk.closeReason ?? tk.title,
+          actorId: 'SYSTEM',
+          actorName: 'Ticket Closure',
+          metadata: { ticketId: tk.id, number: tk.number },
+        });
+      }
+    }
+
+    // Include device work orders in timeline (Section 10.4)
+    const deviceWorkOrders = this.workOrdersRepo?.listByDevice(ctx, deviceId, 50) ?? [];
+    for (const wo of deviceWorkOrders) {
+      events.push({
+        id: `wo_evt_${wo.id}`,
+        kind: 'WORK_ORDER',
+        at: wo.createdAt,
+        title: `${wo.number} (${wo.type}) · ${wo.status}`,
+        description: wo.title,
+        actorId: wo.createdBy,
+        actorName: wo.createdByName ?? wo.createdBy,
+        metadata: { workOrderId: wo.id, number: wo.number, status: wo.status },
+      });
+      if (wo.startedAt) {
+        events.push({
+          id: `wo_str_${wo.id}`,
+          kind: 'WORK_ORDER',
+          at: wo.startedAt,
+          title: `${wo.number} started`,
+          description: `Field work began (${wo.title})`,
+          actorId: wo.assignedTo ?? 'SYSTEM',
+          actorName: wo.assignedToName ?? 'Field Technician',
+          metadata: { workOrderId: wo.id, number: wo.number },
+        });
+      }
+      if (wo.completedAt) {
+        events.push({
+          id: `wo_cmp_${wo.id}`,
+          kind: 'WORK_ORDER',
+          at: wo.completedAt,
+          title: `${wo.number} completed (${wo.completion?.outcome ?? 'FIXED'})`,
+          description: wo.completion?.actionsTaken ?? wo.title,
+          actorId: wo.assignedTo ?? 'SYSTEM',
+          actorName: wo.assignedToName ?? 'Field Technician',
+          metadata: { workOrderId: wo.id, number: wo.number },
+        });
+      }
     }
 
     events.sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : 0));

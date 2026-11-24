@@ -16,6 +16,7 @@ export const config = {
   demoMode: (process.env.DEMO_MODE ?? 'true').toLowerCase() === 'true',
   publicBaseUrl: (process.env.PUBLIC_BASE_URL ?? process.env.APP_URL ?? 'http://localhost:3000').replace(/\/$/, ''),
   databasePath: process.env.DATABASE_PATH ?? './data/omnisphere.db',
+  firmwareStorageDir: process.env.FIRMWARE_DIR ?? './data/firmware',
   telemetryRetentionDays: Number(process.env.TELEMETRY_RETENTION_DAYS ?? 90),
   smtp: {
     host: process.env.SMTP_HOST?.trim() || '',

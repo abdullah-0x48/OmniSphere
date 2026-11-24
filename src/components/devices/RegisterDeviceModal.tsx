@@ -1,8 +1,10 @@
 import React, { useEffect, useState } from 'react';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import type {
+  ConfigProfilePublic,
   DeviceModel,
   DeviceRegistrationResponse,
+  PaginatedResponse,
   Site,
 } from '../../../shared/types.ts';
 import { ApiClientError, apiRequest } from '../../api/client.ts';
@@ -30,8 +32,18 @@ export function RegisterDeviceModal({
   const [modelId, setModelId] = useState('');
   const [siteId, setSiteId] = useState('');
   const [tagsText, setTagsText] = useState('');
+  const [configProfileId, setConfigProfileId] = useState('');
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [formError, setFormError] = useState<string | null>(null);
+
+  const configProfilesQuery = useQuery({
+    queryKey: ['register-modal-config-profiles', modelId],
+    enabled: open && Boolean(modelId),
+    queryFn: () =>
+      apiRequest<PaginatedResponse<ConfigProfilePublic>>('/config-profiles', {
+        query: { modelId, page: 1, pageSize: 100 },
+      }),
+  });
 
   useEffect(() => {
     if (open) {
@@ -41,6 +53,7 @@ export function RegisterDeviceModal({
       setModelId(models[0]?.id ?? '');
       setSiteId(sites[0]?.id ?? '');
       setTagsText('');
+      setConfigProfileId('');
       setFieldErrors({});
       setFormError(null);
     }
@@ -61,6 +74,7 @@ export function RegisterDeviceModal({
           modelId,
           siteId,
           tags,
+          configProfileId: configProfileId || undefined,
         },
       });
     },
@@ -176,7 +190,10 @@ export function RegisterDeviceModal({
             label="Device Model"
             required
             value={modelId}
-            onChange={(e) => setModelId(e.target.value)}
+            onChange={(e) => {
+              setModelId(e.target.value);
+              setConfigProfileId('');
+            }}
             error={fieldErrors.modelId}
           >
             <option value="">Select model...</option>
@@ -202,6 +219,20 @@ export function RegisterDeviceModal({
             ))}
           </Select>
         </div>
+
+        <Select
+          label="Initial Config Profile (optional)"
+          value={configProfileId}
+          onChange={(e) => setConfigProfileId(e.target.value)}
+          hint="If selected, the device receives this configuration automatically on its first handshake."
+        >
+          <option value="">None (configure later)</option>
+          {(configProfilesQuery.data?.items ?? []).map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name} (v{p.version})
+            </option>
+          ))}
+        </Select>
 
         <Input
           label="Tags (optional)"

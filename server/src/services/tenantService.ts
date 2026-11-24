@@ -10,6 +10,7 @@ import {
 import { config } from '../config.ts';
 import {
   toUserPublic,
+  type IAlertRepository,
   type IAuditRepository,
   type IDeviceModelRepository,
   type IDeviceRepository,
@@ -22,6 +23,7 @@ import {
 import { Errors } from '../utils/errors.ts';
 import { generateId } from '../utils/ids.ts';
 import type { AuditService } from './auditService.ts';
+import type { LiveStateStore } from './liveStateStore.ts';
 
 export interface CreateTenantWithAdminInput {
   name: string;
@@ -42,6 +44,8 @@ export class TenantService {
     private readonly audit: AuditService,
     private readonly devices?: IDeviceRepository,
     private readonly deviceModels?: IDeviceModelRepository,
+    private readonly liveState?: LiveStateStore,
+    private readonly alertsRepo?: IAlertRepository,
   ) {}
 
   list(ctx: TenantContext, filter: TenantListFilter): { items: TenantSummary[]; total: number } {
@@ -290,6 +294,11 @@ export class TenantService {
       sortDir: 'asc',
     });
 
+    const ingestion = this.liveState?.getIngestionMetrics() ?? {
+      messagesPerMinute: 0,
+      invalidPayloadRate: 0,
+    };
+
     return {
       counts: {
         tenantsTotal: tenantCounts.total,
@@ -303,6 +312,9 @@ export class TenantService {
         deviceModelsTotal,
         auditEventsLast24h,
         emailsQueuedOrFailed,
+        messagesPerMinute: ingestion.messagesPerMinute,
+        invalidPayloadRate: ingestion.invalidPayloadRate,
+        openCriticalAlerts: this.alertsRepo?.countOpenCriticalGlobal() ?? 0,
       },
       tenants,
       demoMode: config.demoMode,

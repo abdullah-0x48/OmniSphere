@@ -7,6 +7,7 @@ import { ApiClientError, apiRequest } from '../api/client.ts';
 import { useAuth } from '../auth/AuthContext.tsx';
 import {
   Button,
+  Card,
   ConfirmDialog,
   DataTable,
   IconButton,
@@ -138,7 +139,7 @@ export function SitesPage() {
       sortKey: 'name',
       render: (s) => (
         <div className="flex items-center gap-2.5">
-          <MapPin className="w-4 h-4 text-slate-400 shrink-0" aria-hidden="true" />
+          <MapPin className="w-4 h-4 text-slate-500 shrink-0" aria-hidden="true" />
           <span className="font-medium text-slate-900">{s.name}</span>
         </div>
       ),
@@ -199,7 +200,7 @@ export function SitesPage() {
   }
 
   return (
-    <div>
+    <div className="space-y-6">
       <PageHeader
         title="Sites"
         description="Manage plants, production lines, and physical locations where devices are deployed."
@@ -212,28 +213,43 @@ export function SitesPage() {
         }
       />
 
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          updateParams({ q: searchInput.trim() || null, page: '1' });
-        }}
-        className="mb-4 flex items-center gap-2 max-w-md"
-      >
-        <div className="relative flex-1">
-          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-          <input
-            type="search"
-            aria-label="Search sites"
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-            placeholder="Search by site name or location..."
-            className="w-full h-9 pl-9 pr-3 rounded-lg border border-slate-300 bg-white text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600"
-          />
-        </div>
-        <Button type="submit" variant="secondary" size="sm">
-          Search
-        </Button>
-      </form>
+      <Card className="p-4">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            updateParams({ q: searchInput.trim() || null, page: '1' });
+          }}
+          className="flex flex-wrap items-center gap-2 max-w-lg"
+        >
+          <div className="relative flex-1 min-w-[200px]">
+            <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              type="search"
+              aria-label="Search sites"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              placeholder="Search by site name or location..."
+              className="w-full h-9 pl-9 pr-3 rounded-lg border border-slate-300 bg-white text-sm text-slate-900 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600"
+            />
+          </div>
+          <Button type="submit" variant="secondary" size="sm">
+            Search
+          </Button>
+          {q && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                setSearchInput('');
+                updateParams({ q: null, page: '1' });
+              }}
+            >
+              Clear
+            </Button>
+          )}
+        </form>
+      </Card>
 
       <DataTable
         columns={columns}
@@ -248,10 +264,25 @@ export function SitesPage() {
         isLoading={sitesQuery.isLoading}
         error={sitesQuery.error instanceof Error ? sitesQuery.error.message : null}
         onRetry={() => void sitesQuery.refetch()}
-        emptyTitle="No sites configured"
-        emptyDescription="Add a plant or facility location to begin assigning devices."
+        emptyTitle={q ? 'No sites match your search' : 'No sites configured'}
+        emptyDescription={
+          q
+            ? 'Clear your search query to view all configured sites.'
+            : 'Add a plant or facility location to begin assigning devices.'
+        }
         emptyAction={
-          canWrite ? (
+          q ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setSearchInput('');
+                updateParams({ q: null, page: '1' });
+              }}
+            >
+              Clear search
+            </Button>
+          ) : canWrite ? (
             <Button onClick={openCreate} icon={<Plus className="w-4 h-4" />}>
               Add Site
             </Button>

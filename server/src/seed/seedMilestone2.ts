@@ -10,6 +10,10 @@ import { AuditService } from '../services/auditService.ts';
 import { generateDeviceApiKey } from '../services/deviceLifecycle.ts';
 import { generateId } from '../utils/ids.ts';
 import { seedMilestone1Data } from './seedData.ts';
+import { seedMilestone3Telemetry } from './seedMilestone3.ts';
+import { seedMilestone4Data } from './seedMilestone4.ts';
+import { seedMilestone5Data } from './seedMilestone5.ts';
+import { seedMilestone6Data } from './seedMilestone6.ts';
 
 const SYSTEM_PA_CTX: TenantContext = {
   userId: 'SYSTEM',
@@ -464,5 +468,9 @@ export async function seedAllDemoData(
 ) {
   const m1 = await seedMilestone1Data(repos, options);
   const m2 = await seedMilestone2Data(repos, options);
-  return { ...m1, ...m2 };
+  const m3 = seedMilestone3Telemetry(repos, { force: Boolean(options.resetExisting) });
+  const m4 = seedMilestone4Data(repos, options);
+  const m5 = seedMilestone5Data(repos, options);
+  const m6 = seedMilestone6Data(repos, options);
+  return { ...m1, ...m2, ...m3, ...m4, ...m5, ...m6 };
 }

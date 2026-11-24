@@ -218,4 +218,33 @@ describe('Test 1: Repository Tenant Scoping & Isolation (NFR-04)', () => {
     expect(repos.devices.findById(noc1Ctx, 'dev_scw_001')).toBeNull();
     expect(repos.devices.findById(noc1Ctx, 'dev_mfp_001')).not.toBeNull();
   });
+
+  it('alertRuleRepository, alertRepository, and notificationRepository isolate data across tenants and users', async () => {
+    const { seedMilestone4Data } = await import('../src/seed/seedMilestone4.ts');
+    seedMilestone4Data(repos);
+
+    const ktlRules = repos.alertRules.list(ktlCaCtx, { page: 1, pageSize: 50 });
+    expect(ktlRules.items.length).toBeGreaterThan(0);
+    expect(ktlRules.items.every((r) => r.tenantId === 'ten_ktl')).toBe(true);
+    expect(repos.alertRules.findById(ktlCaCtx, 'arl_mfp_offline_90s')).toBeNull();
+    expect(repos.alertRules.delete(ktlCaCtx, 'arl_mfp_offline_90s')).toBe(false);
+
+    const ktlAlerts = repos.alerts.list(ktlCaCtx, { page: 1, pageSize: 50 });
+    expect(ktlAlerts.items.length).toBeGreaterThan(0);
+    expect(ktlAlerts.items.every((a) => a.tenantId === 'ten_ktl')).toBe(true);
+    expect(repos.alerts.findById(ktlCaCtx, 'alr_mfp_open_crit_1')).toBeNull();
+    expect(
+      repos.alerts.acknowledge(ktlCaCtx, 'alr_mfp_open_crit_1', 'usr_ktl_ca', new Date().toISOString()),
+    ).toBeNull();
+
+    // SE noc1 sees KTL & MFP alerts, never SCW alerts
+    expect(repos.alerts.findById(noc1Ctx, 'alr_scw_open_crit_1')).toBeNull();
+    expect(repos.alerts.findById(noc1Ctx, 'alr_mfp_open_crit_1')).not.toBeNull();
+
+    // Notifications strictly scoped to own userId
+    const ktlCaNotifs = repos.notifications.listForUser('usr_ktl_ca', { page: 1, pageSize: 50 });
+    expect(ktlCaNotifs.items.length).toBeGreaterThan(0);
+    const firstKtlNotif = ktlCaNotifs.items[0];
+    expect(repos.notifications.markReadForUser('usr_mfp_ca', firstKtlNotif.id)).toBeNull();
+  });
 });

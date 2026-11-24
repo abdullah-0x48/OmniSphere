@@ -49,7 +49,7 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
       <div
         aria-live="polite"
         aria-atomic="true"
-        className="fixed bottom-18 md:bottom-4 right-0 md:right-4 z-50 flex flex-col gap-2 w-full max-w-sm pointer-events-none px-4 md:px-0"
+        className="fixed bottom-20 md:bottom-4 right-0 md:right-4 z-50 flex flex-col gap-2 w-full max-w-sm pointer-events-none px-4 md:px-0"
       >
         {toasts.map((t) => (
           <div
@@ -66,13 +66,13 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
             )}
             <div className="flex-1 min-w-0">
               <p className="font-medium text-slate-900">{t.title}</p>
-              {t.description && <p className="text-xs text-slate-500 mt-0.5">{t.description}</p>}
+              {t.description && <p className="text-xs text-slate-600 mt-0.5">{t.description}</p>}
             </div>
             <button
               type="button"
               onClick={() => dismiss(t.id)}
               aria-label="Dismiss notification"
-              className="text-slate-400 hover:text-slate-600 cursor-pointer"
+              className="p-1 -m-1 rounded text-slate-500 hover:text-slate-700 cursor-pointer"
             >
               <X className="w-4 h-4" />
             </button>
@@ -100,6 +100,8 @@ const STATUS_TONE_MAP: Record<string, SemanticTone> = {
   APPLIED: 'emerald',
   RELEASED: 'emerald',
   COMPLETED: 'emerald',
+  RESOLVED: 'emerald',
+  FIXED: 'emerald',
   SUCCESS: 'emerald',
   SENT: 'emerald',
   APPROVED: 'emerald',
@@ -111,18 +113,34 @@ const STATUS_TONE_MAP: Record<string, SemanticTone> = {
   REJECTED: 'red',
 
   WARNING: 'amber',
+  HIGH: 'amber',
+  PARTIAL: 'amber',
+  ACKNOWLEDGED: 'amber',
   PENDING: 'amber',
   PENDING_APPROVAL: 'amber',
   UNDER_MAINTENANCE: 'amber',
   WAITING_ON_CLIENT: 'amber',
   IN_PROGRESS: 'amber',
+  DOWNLOADING: 'amber',
+  INSTALLING: 'amber',
+  ROLLED_BACK: 'amber',
 
   PROVISIONED: 'sky',
   QUEUED: 'sky',
   DRAFT: 'sky',
   OPEN: 'sky',
+  PLANNED: 'sky',
+  ASSIGNED: 'sky',
+  MEDIUM: 'sky',
+  REPLACED: 'sky',
+  PREVENTIVE: 'sky',
+  CORRECTIVE: 'amber',
   RUNNING: 'sky',
+  INFO: 'sky',
 
+  LOW: 'slate',
+  NONE: 'slate',
+  NOT_REQUIRED: 'slate',
   SUSPENDED: 'slate',
   CANCELLED: 'slate',
   DECOMMISSIONED: 'slate',
@@ -133,11 +151,11 @@ const STATUS_TONE_MAP: Record<string, SemanticTone> = {
 };
 
 const TONE_CLASSES: Record<SemanticTone, string> = {
-  emerald: 'text-emerald-700 bg-emerald-50 border-emerald-200',
-  red: 'text-red-700 bg-red-50 border-red-200',
-  amber: 'text-amber-800 bg-amber-50 border-amber-200',
-  sky: 'text-sky-700 bg-sky-50 border-sky-200',
-  slate: 'text-slate-600 bg-slate-100 border-slate-200',
+  emerald: 'text-emerald-800 bg-emerald-50 border-emerald-200',
+  red: 'text-red-800 bg-red-50 border-red-200',
+  amber: 'text-amber-900 bg-amber-50 border-amber-300',
+  sky: 'text-sky-800 bg-sky-50 border-sky-200',
+  slate: 'text-slate-700 bg-slate-100 border-slate-300',
 };
 
 function formatEnumLabel(value: string): string {
@@ -181,28 +199,40 @@ export function KpiCard({
   value,
   subtext,
   tone = 'default',
+  loading = false,
 }: {
   label: string;
   value: string | number;
   subtext?: string;
   tone?: 'default' | 'emerald' | 'amber' | 'red';
+  loading?: boolean;
 }) {
+  if (loading) {
+    return (
+      <Card className="p-5">
+        <div className="h-3.5 w-24 rounded bg-slate-200/80 animate-pulse" />
+        <div className="mt-3 h-7 w-20 rounded bg-slate-200 animate-pulse" />
+        <div className="mt-2.5 h-3 w-32 rounded bg-slate-100 animate-pulse" />
+      </Card>
+    );
+  }
+
   const valueCls =
     tone === 'emerald'
       ? 'text-emerald-700'
       : tone === 'amber'
-        ? 'text-amber-700'
+        ? 'text-amber-800'
         : tone === 'red'
           ? 'text-red-700'
           : 'text-slate-900';
 
   return (
     <Card className="p-5">
-      <p className="text-xs font-medium text-slate-500">{label}</p>
+      <p className="text-xs font-medium text-slate-600">{label}</p>
       <p className={`mt-2 text-2xl font-semibold tracking-tight font-mono tabular-nums ${valueCls}`}>
         {value}
       </p>
-      {subtext && <p className="mt-1.5 text-xs text-slate-500">{subtext}</p>}
+      {subtext && <p className="mt-1.5 text-xs text-slate-600">{subtext}</p>}
     </Card>
   );
 }
@@ -222,23 +252,23 @@ export function PageHeader({
     <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4 pb-6">
       <div className="min-w-0">
         {breadcrumbs && breadcrumbs.length > 0 && (
-          <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-xs text-slate-500 mb-1.5">
+          <nav aria-label="Breadcrumb" className="flex items-center gap-1.5 text-xs text-slate-600 mb-1.5">
             {breadcrumbs.map((crumb, idx) => (
               <React.Fragment key={crumb.label}>
                 {idx > 0 && <span aria-hidden="true">/</span>}
                 {crumb.to ? (
-                  <Link to={crumb.to} className="hover:text-indigo-600 transition-colors">
+                  <Link to={crumb.to} className="hover:text-indigo-600 transition-colors rounded">
                     {crumb.label}
                   </Link>
                 ) : (
-                  <span className="text-slate-700 font-medium">{crumb.label}</span>
+                  <span className="text-slate-800 font-medium">{crumb.label}</span>
                 )}
               </React.Fragment>
             ))}
           </nav>
         )}
-        <h1 className="text-xl font-semibold text-slate-900 tracking-tight">{title}</h1>
-        {description && <p className="text-sm text-slate-500 mt-1">{description}</p>}
+        <h1 className="text-xl font-semibold text-slate-900 tracking-tight text-balance">{title}</h1>
+        {description && <p className="text-sm text-slate-600 mt-1">{description}</p>}
       </div>
       {actions && <div className="flex items-center gap-2 shrink-0 flex-wrap">{actions}</div>}
     </div>
@@ -258,9 +288,9 @@ export function EmptyState({
 }) {
   return (
     <div className="flex flex-col items-center justify-center text-center py-12 px-6">
-      {icon && <div className="text-slate-400 mb-3">{icon}</div>}
+      {icon && <div className="text-slate-500 mb-3">{icon}</div>}
       <h3 className="text-sm font-semibold text-slate-900">{title}</h3>
-      <p className="text-sm text-slate-500 mt-1 max-w-md">{description}</p>
+      <p className="text-sm text-slate-600 mt-1 max-w-md">{description}</p>
       {action && <div className="mt-4">{action}</div>}
     </div>
   );
@@ -294,7 +324,7 @@ export function ErrorState({
 
 export function RelativeTime({ iso }: { iso: string | null | undefined }) {
   if (!iso) {
-    return <span className="text-slate-400">Never</span>;
+    return <span className="text-slate-500 text-xs">Never</span>;
   }
   const absolute = formatLocalDateTime(iso);
   return (
@@ -324,15 +354,15 @@ export function Tabs({
             role="tab"
             aria-selected={isActive}
             onClick={() => onChange(tab.id)}
-            className={`pb-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+            className={`pb-3 pt-1 px-0.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap shrink-0 cursor-pointer rounded-t focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600 focus-visible:ring-offset-1 ${
               isActive
-                ? 'border-indigo-600 text-indigo-600'
-                : 'border-transparent text-slate-500 hover:text-slate-800'
+                ? 'border-indigo-600 text-indigo-700'
+                : 'border-transparent text-slate-600 hover:text-slate-900'
             }`}
           >
             {tab.label}
             {tab.count !== undefined && (
-              <span className="ml-1.5 font-mono text-xs tabular-nums text-slate-400">
+              <span className="ml-1.5 font-mono text-xs tabular-nums text-slate-500">
                 ({tab.count})
               </span>
             )}

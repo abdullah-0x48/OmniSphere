@@ -8,6 +8,7 @@ import type {
 } from '../repositories/types.ts';
 import { generateId } from '../utils/ids.ts';
 import { logger } from '../utils/logger.ts';
+import { computeEmailRetryDelayMs } from './alertEvaluationLogic.ts';
 
 function escapeHtml(text: string): string {
   return text
@@ -30,8 +31,35 @@ export interface SendEmailInput {
   relatedId?: string | null;
 }
 
+export type EmailSenderFn = (payload: {
+  from: string;
+  to: string;
+  subject: string;
+  html: string;
+}) => Promise<void>;
+
 export class EmailService {
+  private customSender: EmailSenderFn | null = null;
+  private onPermanentFailure: ((item: EmailOutboxItem) => void) | null = null;
+  private autoKickWorker = true;
+  private processing = false;
+
   constructor(private readonly outboxRepo: IEmailOutboxRepository) {}
+
+  setOnPermanentFailure(cb: ((item: EmailOutboxItem) => void) | null): void {
+    this.onPermanentFailure = cb;
+  }
+
+  /**
+   * Allows deterministic automated tests (Test 6) to simulate SMTP failures or slow servers
+   * without touching external networks.
+   */
+  setCustomSenderForTesting(sender: EmailSenderFn | null, options?: { autoKickWorker?: boolean }): void {
+    this.customSender = sender;
+    if (options?.autoKickWorker !== undefined) {
+      this.autoKickWorker = options.autoKickWorker;
+    }
+  }
 
   private renderHtml(input: SendEmailInput): string {
     const factsRows = input.facts
@@ -62,12 +90,13 @@ export class EmailService {
   }
 
   /**
-   * Queues an email in emailOutbox and attempts immediate delivery.
-   * When SMTP_* env vars are absent, runs in outbox-only mode and marks SENT (Section 3).
+   * Non-blocking enqueue (Section 8.8): writes to `email_outbox` as QUEUED and returns immediately.
+   * Alert creation calls this so a slow or failing SMTP server can NEVER block alert creation.
    */
-  async enqueueAndSend(input: SendEmailInput): Promise<EmailOutboxItem> {
+  enqueue(input: SendEmailInput): EmailOutboxItem {
     const id = generateId('eml');
     const html = this.renderHtml(input);
+    const nowIso = new Date().toISOString();
     const outbox = this.outboxRepo.insert({
       id,
       tenantId: input.tenantId,
@@ -76,57 +105,185 @@ export class EmailService {
       body: html,
       status: 'QUEUED',
       attempts: 0,
-      nextAttemptAt: null,
+      nextAttemptAt: nowIso,
       lastError: null,
       relatedType: input.relatedType ?? null,
       relatedId: input.relatedId ?? null,
     });
 
-    if (!isSmtpConfigured()) {
-      // Outbox-only simulated delivery mode
-      this.outboxRepo.updateDeliveryStatus(id, {
+    if (this.autoKickWorker) {
+      setImmediate(() => {
+        void this.processOutboxOnce().catch((err) => {
+          logger.error('Async email worker kick failed', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+      });
+    }
+
+    return outbox;
+  }
+
+  /**
+   * Queues an email and attempts immediate delivery (used by password reset flow).
+   */
+  async enqueueAndSend(input: SendEmailInput): Promise<EmailOutboxItem> {
+    const id = generateId('eml');
+    const html = this.renderHtml(input);
+    const nowIso = new Date().toISOString();
+    const outbox = this.outboxRepo.insert({
+      id,
+      tenantId: input.tenantId,
+      to: input.to,
+      subject: input.subject,
+      body: html,
+      status: 'QUEUED',
+      attempts: 0,
+      nextAttemptAt: nowIso,
+      lastError: null,
+      relatedType: input.relatedType ?? null,
+      relatedId: input.relatedId ?? null,
+    });
+
+    await this.deliverItem(outbox, Date.now());
+    return this.outboxRepo.findByIdSystem(id) ?? outbox;
+  }
+
+  /**
+   * Processes due QUEUED rows from `email_outbox` (Section 8.8 & 8.9).
+   * Retries failed deliveries up to 3 more times (30s, 60s, 120s); after the 4th failed attempt
+   * marks status FAILED and invokes `onPermanentFailure` so related alerts show the failure warning.
+   */
+  async processOutboxOnce(nowMs = Date.now()): Promise<{
+    processed: number;
+    sent: number;
+    retried: number;
+    failed: number;
+  }> {
+    if (this.processing) {
+      return { processed: 0, sent: 0, retried: 0, failed: 0 };
+    }
+    this.processing = true;
+    let processed = 0;
+    let sent = 0;
+    let retried = 0;
+    let failed = 0;
+
+    try {
+      const nowIso = new Date(nowMs).toISOString();
+      const dueItems = this.outboxRepo.listDueQueuedSystem(nowIso, 50);
+
+      for (const item of dueItems) {
+        const outcome = await this.deliverItem(item, nowMs);
+        processed += 1;
+        if (outcome === 'SENT') sent += 1;
+        else if (outcome === 'RETRIED') retried += 1;
+        else if (outcome === 'FAILED') failed += 1;
+      }
+    } finally {
+      this.processing = false;
+    }
+
+    return { processed, sent, retried, failed };
+  }
+
+  private async deliverItem(
+    item: EmailOutboxItem,
+    nowMs: number,
+  ): Promise<'SENT' | 'RETRIED' | 'FAILED'> {
+    const nextAttempts = item.attempts + 1;
+
+    // Outbox-only mode when SMTP is unconfigured and no test sender is injected
+    if (!this.customSender && !isSmtpConfigured()) {
+      this.outboxRepo.updateDeliveryStatus(item.id, {
         status: 'SENT',
-        attempts: 1,
+        attempts: nextAttempts,
         nextAttemptAt: null,
         lastError: null,
       });
-      return { ...outbox, status: 'SENT', attempts: 1 };
+      return 'SENT';
     }
 
     try {
-      const transporter = nodemailer.createTransport({
-        host: config.smtp.host,
-        port: config.smtp.port,
-        secure: config.smtp.port === 465,
-        auth: {
-          user: config.smtp.user,
-          pass: config.smtp.pass,
-        },
-      });
-      await transporter.sendMail({
-        from: config.smtp.from,
-        to: input.to,
-        subject: input.subject,
-        html,
-      });
-      this.outboxRepo.updateDeliveryStatus(id, {
+      if (this.customSender) {
+        await this.customSender({
+          from: config.smtp.from,
+          to: item.to,
+          subject: item.subject,
+          html: item.body,
+        });
+      } else {
+        const transporter = nodemailer.createTransport({
+          host: config.smtp.host,
+          port: config.smtp.port,
+          secure: config.smtp.port === 465,
+          connectionTimeout: 5000,
+          greetingTimeout: 5000,
+          socketTimeout: 5000,
+          auth:
+            config.smtp.user || config.smtp.pass
+              ? { user: config.smtp.user, pass: config.smtp.pass }
+              : undefined,
+        });
+        await transporter.sendMail({
+          from: config.smtp.from,
+          to: item.to,
+          subject: item.subject,
+          html: item.body,
+        });
+      }
+
+      this.outboxRepo.updateDeliveryStatus(item.id, {
         status: 'SENT',
-        attempts: 1,
+        attempts: nextAttempts,
         nextAttemptAt: null,
         lastError: null,
       });
-      return { ...outbox, status: 'SENT', attempts: 1 };
+      return 'SENT';
     } catch (err) {
       const errMsg = err instanceof Error ? err.message : 'SMTP delivery failed';
-      logger.warn('Email delivery failed; queued for retry', { emailId: id, error: errMsg });
-      const nextRetry = new Date(Date.now() + 30_000).toISOString();
-      this.outboxRepo.updateDeliveryStatus(id, {
-        status: 'QUEUED',
-        attempts: 1,
-        nextAttemptAt: nextRetry,
+      const retryDelayMs = computeEmailRetryDelayMs(nextAttempts);
+
+      if (retryDelayMs !== null) {
+        const nextRetryIso = new Date(nowMs + retryDelayMs).toISOString();
+        logger.warn('Email delivery failed; scheduled retry', {
+          emailId: item.id,
+          attempts: nextAttempts,
+          nextAttemptAt: nextRetryIso,
+          error: errMsg,
+        });
+        this.outboxRepo.updateDeliveryStatus(item.id, {
+          status: 'QUEUED',
+          attempts: nextAttempts,
+          nextAttemptAt: nextRetryIso,
+          lastError: errMsg,
+        });
+        return 'RETRIED';
+      }
+
+      logger.error('Email delivery permanently failed after 3 retries', {
+        emailId: item.id,
+        attempts: nextAttempts,
+        relatedType: item.relatedType,
+        relatedId: item.relatedId,
+        error: errMsg,
+      });
+      this.outboxRepo.updateDeliveryStatus(item.id, {
+        status: 'FAILED',
+        attempts: nextAttempts,
+        nextAttemptAt: null,
         lastError: errMsg,
       });
-      return { ...outbox, status: 'QUEUED', attempts: 1, nextAttemptAt: nextRetry, lastError: errMsg };
+
+      const failedItem: EmailOutboxItem = {
+        ...item,
+        status: 'FAILED',
+        attempts: nextAttempts,
+        nextAttemptAt: null,
+        lastError: errMsg,
+      };
+      this.onPermanentFailure?.(failedItem);
+      return 'FAILED';
     }
   }
 

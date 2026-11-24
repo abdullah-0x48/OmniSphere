@@ -3,31 +3,44 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter, Navigate, Route, Routes, useNavigate } from 'react-router-dom';
 import { ROLE_HOME_PATHS, type RoleCode } from '../shared/types.ts';
 import { AuthProvider, useAuth } from './auth/AuthContext.tsx';
+import { ErrorBoundary } from './components/ui/ErrorBoundary.tsx';
 import { ToastProvider, useToast } from './components/ui/index.ts';
 import { AppShell } from './layouts/AppShell.tsx';
+import { AlertRulesPage } from './pages/AlertRulesPage.tsx';
+import { AlertsPage } from './pages/AlertsPage.tsx';
+import { ApprovalsPage } from './pages/ApprovalsPage.tsx';
 import { AuditPage } from './pages/AuditPage.tsx';
+import { ConfigProfilesPage } from './pages/ConfigProfilesPage.tsx';
 import { DeviceDetailPage } from './pages/DeviceDetailPage.tsx';
 import { DeviceModelsPage } from './pages/DeviceModelsPage.tsx';
 import { DevicesPage } from './pages/DevicesPage.tsx';
 import { EmailOutboxPage } from './pages/EmailOutboxPage.tsx';
+import { FirmwarePage } from './pages/FirmwarePage.tsx';
+import { FleetDashboardPage } from './pages/FleetDashboardPage.tsx';
 import { ForgotPasswordPage } from './pages/ForgotPasswordPage.tsx';
 import { LoginPage } from './pages/LoginPage.tsx';
+import { MaintenancePlansPage } from './pages/MaintenancePlansPage.tsx';
+import { MyWorkOrdersPage } from './pages/MyWorkOrdersPage.tsx';
+import { NocPage } from './pages/NocPage.tsx';
+import { NotificationsPage } from './pages/NotificationsPage.tsx';
 import { PlatformPage } from './pages/PlatformPage.tsx';
 import { ProfilePage } from './pages/ProfilePage.tsx';
+import { ReportsPage } from './pages/ReportsPage.tsx';
 import { ResetPasswordPage } from './pages/ResetPasswordPage.tsx';
-import {
-  ClientDashboardPage,
-  LiveStatusPage,
-  MyWorkOrdersPage,
-  NocHomePage,
-  NotFoundPage,
-} from './pages/RoleHomePages.tsx';
+import { LiveStatusPage, NotFoundPage } from './pages/RoleHomePages.tsx';
+import { RolloutDetailPage } from './pages/RolloutDetailPage.tsx';
+import { RolloutsPage } from './pages/RolloutsPage.tsx';
 import { SettingsPage } from './pages/SettingsPage.tsx';
+import { SimulatorPage } from './pages/SimulatorPage.tsx';
 import { SitesPage } from './pages/SitesPage.tsx';
 import { StaffPage } from './pages/StaffPage.tsx';
 import { TenantDetailPage } from './pages/TenantDetailPage.tsx';
 import { TenantsPage } from './pages/TenantsPage.tsx';
+import { TicketDetailPage } from './pages/TicketDetailPage.tsx';
+import { TicketsPage } from './pages/TicketsPage.tsx';
 import { UsersPage } from './pages/UsersPage.tsx';
+import { WorkOrderDetailPage } from './pages/WorkOrderDetailPage.tsx';
+import { WorkOrdersPage } from './pages/WorkOrdersPage.tsx';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -104,11 +117,12 @@ function HomeRedirect() {
 
 export default function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <ToastProvider>
-        <AuthProvider>
-          <BrowserRouter>
-            <Routes>
+    <ErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <ToastProvider>
+          <AuthProvider>
+            <BrowserRouter>
+              <Routes>
               <Route path="/" element={<HomeRedirect />} />
               <Route
                 path="/login"
@@ -137,6 +151,37 @@ export default function App() {
 
               <Route element={<RequireAuthLayout />}>
                 <Route path="/profile" element={<ProfilePage />} />
+                <Route path="/notifications" element={<NotificationsPage />} />
+                <Route
+                  path="/alerts"
+                  element={
+                    <RoleGuard
+                      allowedRoles={[
+                        'SUPPORT_ENGINEER',
+                        'CLIENT_ADMIN',
+                        'CLIENT_MANAGER',
+                        'CLIENT_OPERATOR',
+                      ]}
+                    >
+                      <AlertsPage />
+                    </RoleGuard>
+                  }
+                />
+                <Route
+                  path="/alert-rules"
+                  element={
+                    <RoleGuard
+                      allowedRoles={[
+                        'SUPPORT_ENGINEER',
+                        'CLIENT_ADMIN',
+                        'CLIENT_MANAGER',
+                        'CLIENT_OPERATOR',
+                      ]}
+                    >
+                      <AlertRulesPage />
+                    </RoleGuard>
+                  }
+                />
 
                 <Route
                   path="/platform"
@@ -203,10 +248,26 @@ export default function App() {
                   }
                 />
                 <Route
+                  path="/reports"
+                  element={
+                    <RoleGuard
+                      allowedRoles={[
+                        'PLATFORM_ADMIN',
+                        'SUPPORT_ENGINEER',
+                        'CLIENT_ADMIN',
+                        'CLIENT_MANAGER',
+                        'CLIENT_OPERATOR',
+                      ]}
+                    >
+                      <ReportsPage />
+                    </RoleGuard>
+                  }
+                />
+                <Route
                   path="/noc"
                   element={
                     <RoleGuard allowedRoles={['SUPPORT_ENGINEER']}>
-                      <NocHomePage />
+                      <NocPage />
                     </RoleGuard>
                   }
                 />
@@ -214,7 +275,15 @@ export default function App() {
                   path="/dashboard"
                   element={
                     <RoleGuard allowedRoles={['CLIENT_ADMIN', 'CLIENT_MANAGER', 'SUPPORT_ENGINEER']}>
-                      <ClientDashboardPage />
+                      <FleetDashboardPage />
+                    </RoleGuard>
+                  }
+                />
+                <Route
+                  path="/simulator"
+                  element={
+                    <RoleGuard allowedRoles={['PLATFORM_ADMIN', 'SUPPORT_ENGINEER', 'CLIENT_ADMIN']}>
+                      <SimulatorPage />
                     </RoleGuard>
                   }
                 />
@@ -223,6 +292,85 @@ export default function App() {
                   element={
                     <RoleGuard allowedRoles={['FIELD_TECHNICIAN']}>
                       <MyWorkOrdersPage />
+                    </RoleGuard>
+                  }
+                />
+                <Route
+                  path="/tickets"
+                  element={
+                    <RoleGuard
+                      allowedRoles={[
+                        'SUPPORT_ENGINEER',
+                        'CLIENT_ADMIN',
+                        'CLIENT_MANAGER',
+                        'CLIENT_OPERATOR',
+                        'FIELD_TECHNICIAN',
+                      ]}
+                    >
+                      <TicketsPage />
+                    </RoleGuard>
+                  }
+                />
+                <Route
+                  path="/tickets/:id"
+                  element={
+                    <RoleGuard
+                      allowedRoles={[
+                        'SUPPORT_ENGINEER',
+                        'CLIENT_ADMIN',
+                        'CLIENT_MANAGER',
+                        'CLIENT_OPERATOR',
+                        'FIELD_TECHNICIAN',
+                      ]}
+                    >
+                      <TicketDetailPage />
+                    </RoleGuard>
+                  }
+                />
+                <Route
+                  path="/work-orders"
+                  element={
+                    <RoleGuard
+                      allowedRoles={[
+                        'SUPPORT_ENGINEER',
+                        'CLIENT_ADMIN',
+                        'CLIENT_MANAGER',
+                        'CLIENT_OPERATOR',
+                      ]}
+                    >
+                      <WorkOrdersPage />
+                    </RoleGuard>
+                  }
+                />
+                <Route
+                  path="/work-orders/:id"
+                  element={
+                    <RoleGuard
+                      allowedRoles={[
+                        'SUPPORT_ENGINEER',
+                        'FIELD_TECHNICIAN',
+                        'CLIENT_ADMIN',
+                        'CLIENT_MANAGER',
+                        'CLIENT_OPERATOR',
+                      ]}
+                    >
+                      <WorkOrderDetailPage />
+                    </RoleGuard>
+                  }
+                />
+                <Route
+                  path="/maintenance-plans"
+                  element={
+                    <RoleGuard allowedRoles={['SUPPORT_ENGINEER']}>
+                      <MaintenancePlansPage />
+                    </RoleGuard>
+                  }
+                />
+                <Route
+                  path="/approvals"
+                  element={
+                    <RoleGuard allowedRoles={['CLIENT_MANAGER']}>
+                      <ApprovalsPage />
                     </RoleGuard>
                   }
                 />
@@ -255,6 +403,56 @@ export default function App() {
                   element={
                     <RoleGuard allowedRoles={['PLATFORM_ADMIN', 'SUPPORT_ENGINEER']}>
                       <DeviceModelsPage />
+                    </RoleGuard>
+                  }
+                />
+                <Route
+                  path="/config-profiles"
+                  element={
+                    <RoleGuard
+                      allowedRoles={[
+                        'CLIENT_ADMIN',
+                        'SUPPORT_ENGINEER',
+                        'CLIENT_MANAGER',
+                        'CLIENT_OPERATOR',
+                      ]}
+                    >
+                      <ConfigProfilesPage />
+                    </RoleGuard>
+                  }
+                />
+                <Route
+                  path="/firmware"
+                  element={
+                    <RoleGuard
+                      allowedRoles={[
+                        'PLATFORM_ADMIN',
+                        'SUPPORT_ENGINEER',
+                        'CLIENT_ADMIN',
+                        'CLIENT_MANAGER',
+                      ]}
+                    >
+                      <FirmwarePage />
+                    </RoleGuard>
+                  }
+                />
+                <Route
+                  path="/rollouts"
+                  element={
+                    <RoleGuard
+                      allowedRoles={['CLIENT_ADMIN', 'SUPPORT_ENGINEER', 'CLIENT_MANAGER']}
+                    >
+                      <RolloutsPage />
+                    </RoleGuard>
+                  }
+                />
+                <Route
+                  path="/rollouts/:id"
+                  element={
+                    <RoleGuard
+                      allowedRoles={['CLIENT_ADMIN', 'SUPPORT_ENGINEER', 'CLIENT_MANAGER']}
+                    >
+                      <RolloutDetailPage />
                     </RoleGuard>
                   }
                 />
@@ -298,5 +496,6 @@ export default function App() {
         </AuthProvider>
       </ToastProvider>
     </QueryClientProvider>
+    </ErrorBoundary>
   );
 }

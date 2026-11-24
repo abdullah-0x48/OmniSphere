@@ -369,4 +369,17 @@ export class SqliteUserRepository implements IUserRepository {
       providerStaff: row.provider_staff ?? 0,
     };
   }
+
+  listAllActiveSystem(): UserRecord[] {
+    const rows = this.db
+      .prepare(
+        `SELECT u.*, t.name AS tenant_name, t.code AS tenant_code
+         FROM users u
+         LEFT JOIN tenants t ON t.id = u.tenant_id
+         WHERE u.status = 'ACTIVE'`,
+      )
+      .all() as UserRow[];
+    return rows.map(mapRow);
+  }
 }
+

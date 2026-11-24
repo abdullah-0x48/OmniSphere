@@ -79,6 +79,25 @@ export function SettingsPage() {
           }
           onRetry={() => void tenantQuery.refetch()}
         />
+      ) : tenantQuery.isLoading ? (
+        <Card className="p-6 max-w-2xl space-y-6" aria-busy="true" aria-label="Loading settings">
+          <div className="space-y-4">
+            <div className="h-4 w-44 bg-slate-200 rounded animate-pulse" />
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <div key={i} className="space-y-2">
+                  <div className="h-3.5 w-28 bg-slate-100 rounded animate-pulse" />
+                  <div className="h-9 w-full bg-slate-100 rounded-lg animate-pulse" />
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="pt-5 border-t border-slate-200 space-y-3">
+            <div className="h-4 w-40 bg-slate-200 rounded animate-pulse" />
+            <div className="h-10 w-full bg-slate-100 rounded-lg animate-pulse" />
+            <div className="h-10 w-full bg-slate-100 rounded-lg animate-pulse" />
+          </div>
+        </Card>
       ) : (
         <Card className="p-6 max-w-2xl">
           <form

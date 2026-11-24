@@ -85,6 +85,15 @@ const bulkDeviceActionSchema = z.object({
   reason: z.string().trim().max(500).optional(),
 });
 
+const telemetryQuerySchema = z.object({
+  metric: z.string().trim().min(1).max(64).optional(),
+  range: z.enum(['15m', '1h', '24h', '7d']).optional().default('1h'),
+});
+
+const enqueueCommandSchema = z.object({
+  type: z.enum(['RESTART']),
+});
+
 export function createDevicesRouter(
   deviceService: DeviceService,
   requireAuth: RequestHandler,
@@ -232,6 +241,45 @@ export function createDevicesRouter(
     asyncHandler(async (req, res) => {
       const items = deviceService.getTimeline(req.tenantContext!, req.params.id);
       res.status(200).json({ items });
+    }),
+  );
+
+  router.get(
+    '/:id/live',
+    requireRole(DEVICE_READ_ROLES),
+    asyncHandler(async (req, res) => {
+      const live = deviceService.getLive(req.tenantContext!, req.params.id);
+      res.status(200).json(live);
+    }),
+  );
+
+  router.get(
+    '/:id/telemetry',
+    requireRole(DEVICE_READ_ROLES),
+    validateQuery(telemetryQuerySchema),
+    asyncHandler(async (req, res) => {
+      const q = res.locals.query as z.infer<typeof telemetryQuerySchema>;
+      const result = deviceService.getTelemetry(req.tenantContext!, req.params.id, {
+        metric: q.metric,
+        range: q.range,
+      });
+      res.status(200).json(result);
+    }),
+  );
+
+  router.post(
+    '/:id/commands',
+    requireRole(DEVICE_WRITE_ROLES),
+    validateBody(enqueueCommandSchema),
+    asyncHandler(async (req, res) => {
+      const body = req.body as z.infer<typeof enqueueCommandSchema>;
+      const command = deviceService.enqueueCommand(
+        req.tenantContext!,
+        req.params.id,
+        body,
+        req.clientIp,
+      );
+      res.status(201).json(command);
     }),
   );
 

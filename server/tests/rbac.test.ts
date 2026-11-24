@@ -138,6 +138,31 @@ describe('Test 2: RBAC Matrix & Milestone 1 Acceptance Flows', () => {
       body: {},
       expected: { PA: 403, SE: 400, FT: 403, CA: 400, CM: 403, CO: 403 },
     },
+    {
+      name: 'GET /api/v1/alert-rules (SE, CA, CM, CO only)',
+      method: 'get',
+      path: '/api/v1/alert-rules',
+      expected: { PA: 403, SE: 200, FT: 403, CA: 200, CM: 200, CO: 200 },
+    },
+    {
+      name: 'POST /api/v1/alert-rules (CA and SE only; invalid empty body -> 400 vs 403)',
+      method: 'post',
+      path: '/api/v1/alert-rules',
+      body: {},
+      expected: { PA: 403, SE: 400, FT: 403, CA: 400, CM: 403, CO: 403 },
+    },
+    {
+      name: 'GET /api/v1/alerts (SE, CA, CM, CO only)',
+      method: 'get',
+      path: '/api/v1/alerts',
+      expected: { PA: 403, SE: 200, FT: 403, CA: 200, CM: 200, CO: 200 },
+    },
+    {
+      name: 'GET /api/v1/notifications (all roles)',
+      method: 'get',
+      path: '/api/v1/notifications',
+      expected: { PA: 200, SE: 200, FT: 200, CA: 200, CM: 200, CO: 200 },
+    },
   ];
 
   for (const tc of rbacCases) {

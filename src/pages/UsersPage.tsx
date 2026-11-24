@@ -154,7 +154,7 @@ export function UsersPage() {
           <p className="font-medium text-slate-900">
             {u.name}
             {u.id === currentUser?.id && (
-              <span className="ml-1.5 text-xs text-slate-400">(You)</span>
+              <span className="ml-1.5 text-xs text-slate-600">(You)</span>
             )}
           </p>
           <p className="text-xs font-mono text-slate-500">{u.email}</p>
@@ -273,6 +273,18 @@ export function UsersPage() {
           <Button type="submit" variant="secondary" icon={<Search className="w-4 h-4" />}>
             Filter
           </Button>
+          {(q || roleFilter || statusFilter) && (
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                setSearchInput('');
+                updateParams({ q: null, role: null, status: null, page: '1' });
+              }}
+            >
+              Clear
+            </Button>
+          )}
         </form>
       </Card>
 
@@ -296,7 +308,29 @@ export function UsersPage() {
         }
         onRetry={() => void usersQuery.refetch()}
         emptyTitle="No users found"
-        emptyDescription="Add Client Managers or Operators to collaborate on your fleet."
+        emptyDescription={
+          q || roleFilter || statusFilter
+            ? 'No users match the active filters.'
+            : 'Add Client Managers or Operators to collaborate on your fleet.'
+        }
+        emptyAction={
+          q || roleFilter || statusFilter ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setSearchInput('');
+                updateParams({ q: null, role: null, status: null, page: '1' });
+              }}
+            >
+              Clear filters
+            </Button>
+          ) : (
+            <Button size="sm" icon={<Plus className="w-4 h-4" />} onClick={() => setCreateOpen(true)}>
+              Add user
+            </Button>
+          )
+        }
       />
 
       <Modal

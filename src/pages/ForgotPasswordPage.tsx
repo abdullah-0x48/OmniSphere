@@ -33,7 +33,7 @@ export function ForgotPasswordPage() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col justify-center py-12 px-4">
+    <div className="min-h-screen bg-slate-50 flex flex-col justify-center py-8 sm:py-12 px-4">
       <div className="w-full max-w-md mx-auto">
         <div className="flex items-center gap-2.5 mb-6">
           <div className="w-9 h-9 rounded-lg bg-indigo-600 flex items-center justify-center">
@@ -42,14 +42,14 @@ export function ForgotPasswordPage() {
           <span className="text-lg font-semibold text-slate-900">OmniSphere</span>
         </div>
 
-        <Card className="p-6">
+        <Card className="p-5 sm:p-6">
           <h1 className="text-base font-semibold text-slate-900">Reset your password</h1>
-          <p className="text-xs text-slate-500 mt-1">
+          <p className="text-xs text-slate-600 mt-1">
             Enter your email address and we will send a single-use reset link valid for 60 minutes.
           </p>
 
           {error && (
-            <div role="alert" className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3.5 py-2.5 text-sm text-red-700">
+            <div role="alert" className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3.5 py-2.5 text-sm text-red-800">
               {error}
             </div>
           )}
@@ -59,12 +59,12 @@ export function ForgotPasswordPage() {
               <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3.5 py-3 text-sm text-emerald-800">
                 {sentMessage}
               </div>
-              <p className="text-xs text-slate-500">
+              <p className="text-xs text-slate-600">
                 In outbox-only environments without SMTP, an administrator can retrieve the link from the Email Outbox page.
               </p>
               <Link
                 to="/login"
-                className="inline-flex items-center gap-1.5 text-sm font-medium text-indigo-600 hover:text-indigo-700"
+                className="inline-flex items-center gap-1.5 min-h-[40px] text-sm font-medium text-indigo-700 hover:text-indigo-800"
               >
                 <ArrowLeft className="w-4 h-4" />
                 Return to sign in
@@ -78,15 +78,16 @@ export function ForgotPasswordPage() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="name@organization.com"
+                className="min-h-[44px] sm:min-h-[38px]"
                 required
               />
-              <Button type="submit" loading={submitting} className="w-full">
+              <Button type="submit" size="lg" loading={submitting} className="w-full min-h-[44px]">
                 Send reset link
               </Button>
               <div className="pt-1">
                 <Link
                   to="/login"
-                  className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600 hover:text-slate-900"
+                  className="inline-flex items-center gap-1.5 min-h-[36px] text-xs font-medium text-slate-600 hover:text-slate-900"
                 >
                   <ArrowLeft className="w-3.5 h-3.5" />
                   Back to sign in

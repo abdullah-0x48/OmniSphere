@@ -65,7 +65,7 @@ export function ProfilePage() {
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        <Card className="p-6 lg:col-span-6 space-y-4">
+        <Card className="p-5 sm:p-6 lg:col-span-6 space-y-4">
           <div className="flex items-center justify-between">
             <h2 className="text-base font-semibold text-slate-900">Account details</h2>
             <StatusChip status={user.status} />
@@ -73,29 +73,29 @@ export function ProfilePage() {
 
           <dl className="divide-y divide-slate-100 text-sm">
             <div className="py-3 flex justify-between gap-4">
-              <dt className="text-slate-500">Name</dt>
+              <dt className="text-slate-600">Name</dt>
               <dd className="font-medium text-slate-900">{user.name}</dd>
             </div>
             <div className="py-3 flex justify-between gap-4">
-              <dt className="text-slate-500">Email</dt>
-              <dd className="font-mono text-xs text-slate-800">{user.email}</dd>
+              <dt className="text-slate-600">Email</dt>
+              <dd className="font-mono text-xs text-slate-800 break-all text-right">{user.email}</dd>
             </div>
             <div className="py-3 flex justify-between gap-4">
-              <dt className="text-slate-500">Role</dt>
-              <dd className="font-medium text-slate-900">
+              <dt className="text-slate-600">Role</dt>
+              <dd className="font-medium text-slate-900 text-right">
                 {ROLE_LABELS[user.role]}
                 {user.isSupervisor ? ' · Supervisor' : ''}
               </dd>
             </div>
             <div className="py-3 flex justify-between gap-4">
-              <dt className="text-slate-500">Organization</dt>
-              <dd className="text-slate-900">
+              <dt className="text-slate-600">Organization</dt>
+              <dd className="text-slate-900 text-right">
                 {user.tenantName ? `${user.tenantName} (${user.tenantCode})` : 'Service Provider'}
               </dd>
             </div>
             {(user.role === 'SUPPORT_ENGINEER' || user.role === 'FIELD_TECHNICIAN') && (
               <div className="py-3 flex justify-between gap-4">
-                <dt className="text-slate-500">Assigned tenants</dt>
+                <dt className="text-slate-600">Assigned tenants</dt>
                 <dd className="text-right text-slate-800">
                   {tenants.length === 0
                     ? 'None'
@@ -104,22 +104,22 @@ export function ProfilePage() {
               </div>
             )}
             <div className="py-3 flex justify-between gap-4">
-              <dt className="text-slate-500">Last sign-in</dt>
-              <dd className="font-mono text-xs tabular-nums text-slate-700">
+              <dt className="text-slate-600">Last sign-in</dt>
+              <dd className="font-mono text-xs tabular-nums text-slate-700 text-right">
                 {formatLocalDateTime(user.lastLoginAt)}
               </dd>
             </div>
           </dl>
         </Card>
 
-        <Card className="p-6 lg:col-span-6">
+        <Card className="p-5 sm:p-6 lg:col-span-6">
           <h2 className="text-base font-semibold text-slate-900">Change password</h2>
-          <p className="text-xs text-slate-500 mt-1">
+          <p className="text-xs text-slate-600 mt-1">
             Minimum 8 characters with at least one letter and one digit.
           </p>
 
           {error && (
-            <div role="alert" className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3.5 py-2.5 text-sm text-red-700">
+            <div role="alert" className="mt-4 rounded-lg border border-red-200 bg-red-50 px-3.5 py-2.5 text-sm text-red-800">
               {error}
             </div>
           )}

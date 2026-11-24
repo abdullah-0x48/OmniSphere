@@ -1,24 +1,34 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Activity,
+  BarChart3,
+  Bell,
   Boxes,
   Building2,
+  CalendarSync,
+  CheckSquare,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   ClipboardCheck,
   Cpu,
+  FileCode2,
   LayoutDashboard,
   LogOut,
   Mail,
   MapPin,
   Menu,
   Radio,
+  Rocket,
   ScrollText,
   Settings,
   ShieldCheck,
+  Sliders,
+  SlidersHorizontal,
+  Ticket,
   User as UserIcon,
   Users,
+  Wrench,
   X,
 } from 'lucide-react';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
@@ -29,6 +39,7 @@ import {
 } from '../../shared/types.ts';
 import { useAuth } from '../auth/AuthContext.tsx';
 import { GlobalDeviceSearch } from '../components/devices/GlobalDeviceSearch.tsx';
+import { NotificationBell } from '../components/notifications/NotificationBell.tsx';
 import { useToast } from '../components/ui/index.ts';
 
 interface NavItem {
@@ -45,15 +56,29 @@ function getNavForRole(role: RoleCode): NavItem[] {
         { label: 'Tenants', to: '/tenants', icon: Building2 },
         { label: 'Provider Staff', to: '/staff', icon: Users },
         { label: 'Device Models', to: '/device-models', icon: Boxes },
+        { label: 'Firmware', to: '/firmware', icon: FileCode2 },
+        { label: 'Reports', to: '/reports', icon: BarChart3 },
+        { label: 'Simulator', to: '/simulator', icon: Radio },
         { label: 'Audit Log', to: '/audit', icon: ScrollText },
         { label: 'Email Outbox', to: '/email-outbox', icon: Mail },
       ];
     case 'SUPPORT_ENGINEER':
       return [
         { label: 'NOC Overview', to: '/noc', icon: Radio },
+        { label: 'Dashboard', to: '/dashboard', icon: LayoutDashboard },
+        { label: 'Alerts', to: '/alerts', icon: Bell },
+        { label: 'Alert Rules', to: '/alert-rules', icon: SlidersHorizontal },
+        { label: 'Tickets', to: '/tickets', icon: Ticket },
+        { label: 'Work Orders', to: '/work-orders', icon: Wrench },
+        { label: 'Maintenance Plans', to: '/maintenance-plans', icon: CalendarSync },
         { label: 'Devices', to: '/devices', icon: Cpu },
         { label: 'Sites', to: '/sites', icon: MapPin },
+        { label: 'Config Profiles', to: '/config-profiles', icon: Sliders },
+        { label: 'Firmware', to: '/firmware', icon: FileCode2 },
+        { label: 'Rollouts', to: '/rollouts', icon: Rocket },
+        { label: 'Reports', to: '/reports', icon: BarChart3 },
         { label: 'Device Models', to: '/device-models', icon: Boxes },
+        { label: 'Simulator', to: '/simulator', icon: Activity },
         { label: 'Email Outbox', to: '/email-outbox', icon: Mail },
       ];
     case 'FIELD_TECHNICIAN':
@@ -65,8 +90,17 @@ function getNavForRole(role: RoleCode): NavItem[] {
     case 'CLIENT_ADMIN':
       return [
         { label: 'Dashboard', to: '/dashboard', icon: LayoutDashboard },
+        { label: 'Alerts', to: '/alerts', icon: Bell },
+        { label: 'Alert Rules', to: '/alert-rules', icon: SlidersHorizontal },
+        { label: 'Tickets', to: '/tickets', icon: Ticket },
+        { label: 'Work Orders', to: '/work-orders', icon: Wrench },
         { label: 'Devices', to: '/devices', icon: Cpu },
         { label: 'Sites', to: '/sites', icon: MapPin },
+        { label: 'Config Profiles', to: '/config-profiles', icon: Sliders },
+        { label: 'Firmware', to: '/firmware', icon: FileCode2 },
+        { label: 'Rollouts', to: '/rollouts', icon: Rocket },
+        { label: 'Reports', to: '/reports', icon: BarChart3 },
+        { label: 'Simulator', to: '/simulator', icon: Radio },
         { label: 'Users', to: '/users', icon: Users },
         { label: 'Settings', to: '/settings', icon: Settings },
         { label: 'Audit Log', to: '/audit', icon: ScrollText },
@@ -75,15 +109,28 @@ function getNavForRole(role: RoleCode): NavItem[] {
     case 'CLIENT_MANAGER':
       return [
         { label: 'Dashboard', to: '/dashboard', icon: LayoutDashboard },
+        { label: 'Approvals', to: '/approvals', icon: CheckSquare },
+        { label: 'Alerts', to: '/alerts', icon: Bell },
+        { label: 'Alert Rules', to: '/alert-rules', icon: SlidersHorizontal },
+        { label: 'Tickets', to: '/tickets', icon: Ticket },
+        { label: 'Work Orders', to: '/work-orders', icon: Wrench },
         { label: 'Devices', to: '/devices', icon: Cpu },
         { label: 'Sites', to: '/sites', icon: MapPin },
+        { label: 'Config Profiles', to: '/config-profiles', icon: Sliders },
+        { label: 'Firmware', to: '/firmware', icon: FileCode2 },
+        { label: 'Rollouts', to: '/rollouts', icon: Rocket },
+        { label: 'Reports', to: '/reports', icon: BarChart3 },
         { label: 'Profile', to: '/profile', icon: UserIcon },
       ];
     case 'CLIENT_OPERATOR':
       return [
         { label: 'Live Status', to: '/live-status', icon: Radio },
+        { label: 'Alerts', to: '/alerts', icon: Bell },
+        { label: 'Tickets', to: '/tickets', icon: Ticket },
         { label: 'Devices', to: '/devices', icon: Cpu },
+        { label: 'Reports', to: '/reports', icon: BarChart3 },
         { label: 'Sites', to: '/sites', icon: MapPin },
+        { label: 'Config Profiles', to: '/config-profiles', icon: Sliders },
         { label: 'Profile', to: '/profile', icon: UserIcon },
       ];
   }
@@ -111,8 +158,18 @@ export function AppShell() {
         setUserMenuOpen(false);
       }
     };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setMobileMenuOpen(false);
+        setUserMenuOpen(false);
+      }
+    };
     document.addEventListener('mousedown', onDocClick);
-    return () => document.removeEventListener('mousedown', onDocClick);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      document.removeEventListener('keydown', onKeyDown);
+    };
   }, []);
 
   if (!user) return null;
@@ -129,6 +186,12 @@ export function AppShell() {
 
   return (
     <div className="min-h-screen flex bg-slate-50 text-slate-900">
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-3 focus:left-3 focus:z-50 focus:px-3.5 focus:py-2 focus:rounded-lg focus:bg-indigo-600 focus:text-white focus:text-sm focus:font-medium focus:shadow-lg"
+      >
+        Skip to main content
+      </a>
       {/* Desktop Sidebar */}
       <aside
         aria-label="Primary navigation"
@@ -257,7 +320,7 @@ export function AppShell() {
                 type="button"
                 onClick={() => setMobileMenuOpen(true)}
                 aria-label="Open menu"
-                className="md:hidden p-1.5 rounded-lg text-slate-600 hover:bg-slate-100"
+                className="md:hidden inline-flex items-center justify-center min-h-[44px] min-w-[44px] -ml-2 rounded-lg text-slate-700 hover:bg-slate-100 cursor-pointer"
               >
                 <Menu className="w-5 h-5" />
               </button>
@@ -311,6 +374,9 @@ export function AppShell() {
               </div>
             )}
 
+            {/* Notification Bell (all roles — Section 10.1) */}
+            <NotificationBell />
+
             {/* User Menu */}
             <div className="relative" ref={userMenuRef}>
               <button
@@ -318,9 +384,10 @@ export function AppShell() {
                 onClick={() => setUserMenuOpen((o) => !o)}
                 aria-expanded={userMenuOpen}
                 aria-haspopup="menu"
-                className="flex items-center gap-2 h-9 px-2.5 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+                aria-label={`Account menu for ${user.name}`}
+                className="flex items-center gap-2 min-h-[44px] sm:min-h-[36px] px-2.5 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
               >
-                <span className="w-7 h-7 rounded-full bg-indigo-100 text-indigo-700 text-xs font-semibold flex items-center justify-center shrink-0">
+                <span className="w-7 h-7 rounded-full bg-indigo-100 text-indigo-800 text-xs font-semibold flex items-center justify-center shrink-0">
                   {user.name
                     .split(' ')
                     .map((p) => p[0])
@@ -332,11 +399,11 @@ export function AppShell() {
                   <span className="block text-xs font-semibold text-slate-800 max-w-[140px] truncate">
                     {user.name}
                   </span>
-                  <span className="block text-[11px] text-slate-500">
+                  <span className="block text-[11px] text-slate-600">
                     {ROLE_SHORT_LABELS[user.role]}
                   </span>
                 </span>
-                <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+                <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
               </button>
 
               {userMenuOpen && (
@@ -372,7 +439,9 @@ export function AppShell() {
         </header>
 
         <main
-          className={`flex-1 w-full max-w-[1360px] mx-auto px-4 sm:px-6 lg:px-8 py-6 ${
+          id="main-content"
+          tabIndex={-1}
+          className={`flex-1 w-full max-w-[1360px] mx-auto px-4 sm:px-6 lg:px-8 py-6 focus:outline-none ${
             useMobileBottomBar ? 'pb-20 md:pb-6' : ''
           }`}
         >
@@ -383,7 +452,7 @@ export function AppShell() {
         {useMobileBottomBar && (
           <nav
             aria-label="Mobile navigation"
-            className="md:hidden fixed bottom-0 inset-x-0 bg-white border-t border-slate-200 flex items-center justify-around h-14 z-30"
+            className="md:hidden fixed bottom-0 inset-x-0 bg-white border-t border-slate-200 flex items-center justify-around h-16 px-1 z-30"
           >
             {navItems.slice(0, 5).map((item) => {
               const Icon = item.icon;
@@ -392,13 +461,13 @@ export function AppShell() {
                   key={item.to}
                   to={item.to}
                   className={({ isActive }) =>
-                    `flex flex-col items-center justify-center gap-0.5 px-3 py-1 text-xs font-medium min-w-[72px] ${
-                      isActive ? 'text-indigo-600' : 'text-slate-500'
+                    `flex-1 min-w-0 min-h-[48px] flex flex-col items-center justify-center gap-0.5 px-1 py-1 text-[11px] font-medium rounded-lg transition-colors ${
+                      isActive ? 'text-indigo-700 bg-indigo-50/60' : 'text-slate-600 hover:text-slate-900'
                     }`
                   }
                 >
-                  <Icon className="w-5 h-5" />
-                  <span>{item.label}</span>
+                  <Icon className="w-5 h-5 shrink-0" aria-hidden="true" />
+                  <span className="truncate max-w-full">{item.label}</span>
                 </NavLink>
               );
             })}

@@ -345,6 +345,18 @@ export function StaffPage() {
           <Button type="submit" variant="secondary" icon={<Search className="w-4 h-4" />}>
             Filter
           </Button>
+          {(q || roleFilter || statusFilter) && (
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => {
+                setSearchInput('');
+                updateParams({ q: null, role: null, status: null, page: '1' });
+              }}
+            >
+              Clear
+            </Button>
+          )}
         </form>
       </Card>
 
@@ -368,7 +380,29 @@ export function StaffPage() {
         }
         onRetry={() => void staffQuery.refetch()}
         emptyTitle="No provider staff found"
-        emptyDescription="Add Support Engineers or Field Technicians and assign them to client organizations."
+        emptyDescription={
+          q || roleFilter || statusFilter
+            ? 'No staff members match the active filters.'
+            : 'Add Support Engineers or Field Technicians and assign them to client organizations.'
+        }
+        emptyAction={
+          q || roleFilter || statusFilter ? (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setSearchInput('');
+                updateParams({ q: null, role: null, status: null, page: '1' });
+              }}
+            >
+              Clear filters
+            </Button>
+          ) : (
+            <Button size="sm" icon={<Plus className="w-4 h-4" />} onClick={() => setCreateOpen(true)}>
+              Add staff member
+            </Button>
+          )
+        }
       />
 
       {/* Create Staff Modal */}

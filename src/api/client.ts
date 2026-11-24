@@ -94,10 +94,11 @@ export async function apiRequest<T>(
     }
   }
 
+  const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
   const headers: Record<string, string> = {
     Accept: 'application/json',
   };
-  if (options.body !== undefined) {
+  if (options.body !== undefined && !isFormData) {
     headers['Content-Type'] = 'application/json';
   }
   if (!options.skipAuthHeader) {
@@ -114,7 +115,12 @@ export async function apiRequest<T>(
   const res = await fetch(url.toString(), {
     method: options.method ?? 'GET',
     headers,
-    body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+    body:
+      options.body === undefined
+        ? undefined
+        : isFormData
+          ? (options.body as FormData)
+          : JSON.stringify(options.body),
   });
 
   const text = await res.text();

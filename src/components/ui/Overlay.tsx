@@ -1,7 +1,77 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import { Button, IconButton } from './Button.tsx';
 import { Input } from './FormControls.tsx';
+
+const FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'button:not([disabled])',
+  'textarea:not([disabled])',
+  'input:not([disabled]):not([type="hidden"])',
+  'select:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',');
+
+function useDialogFocusTrap(
+  open: boolean,
+  containerRef: React.RefObject<HTMLDivElement | null>,
+  onClose: () => void,
+) {
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    if (!open) return;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    const container = containerRef.current;
+
+    const focusInitial = () => {
+      if (!container) return;
+      const focusables = container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR);
+      const target = focusables[0] ?? container;
+      target.focus({ preventScroll: true });
+    };
+    const raf = window.requestAnimationFrame(focusInitial);
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (e.key !== 'Tab' || !container) return;
+      const focusables = Array.from(
+        container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
+      ).filter((el) => el.offsetParent !== null);
+      if (focusables.length === 0) {
+        e.preventDefault();
+        container.focus();
+        return;
+      }
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+      if (e.shiftKey) {
+        if (!active || active === first || !container.contains(active)) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else if (!active || active === last || !container.contains(active)) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.cancelAnimationFrame(raf);
+      window.removeEventListener('keydown', onKeyDown);
+      if (previousFocus && typeof previousFocus.focus === 'function') {
+        previousFocus.focus({ preventScroll: true });
+      }
+    };
+  }, [open, containerRef]);
+}
 
 interface ModalProps {
   open: boolean;
@@ -28,14 +98,9 @@ export function Modal({
   children,
   footer,
 }: ModalProps) {
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+  const titleId = useId();
+  const panelRef = useRef<HTMLDivElement>(null);
+  useDialogFocusTrap(open, panelRef, onClose);
 
   if (!open) return null;
 
@@ -44,20 +109,22 @@ export function Modal({
       className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4"
       role="dialog"
       aria-modal="true"
-      aria-labelledby="modal-title"
+      aria-labelledby={titleId}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
       <div
-        className={`w-full ${MODAL_SIZES[size]} rounded-xl bg-white border border-slate-200 shadow-lg flex flex-col max-h-[90vh]`}
+        ref={panelRef}
+        tabIndex={-1}
+        className={`w-full ${MODAL_SIZES[size]} rounded-xl bg-white border border-slate-200 shadow-lg flex flex-col max-h-[90vh] focus:outline-none`}
       >
         <div className="flex items-start justify-between gap-4 px-6 py-4 border-b border-slate-200">
           <div>
-            <h2 id="modal-title" className="text-base font-semibold text-slate-900">
+            <h2 id={titleId} className="text-base font-semibold text-slate-900">
               {title}
             </h2>
-            {description && <p className="text-xs text-slate-500 mt-0.5">{description}</p>}
+            {description && <p className="text-xs text-slate-600 mt-0.5">{description}</p>}
           </div>
           <IconButton label="Close dialog" onClick={onClose} size="sm">
             <X className="w-4 h-4" />
@@ -83,14 +150,9 @@ interface DrawerProps {
 }
 
 export function Drawer({ open, onClose, title, subtitle, children }: DrawerProps) {
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+  const titleId = useId();
+  const panelRef = useRef<HTMLDivElement>(null);
+  useDialogFocusTrap(open, panelRef, onClose);
 
   if (!open) return null;
 
@@ -99,16 +161,22 @@ export function Drawer({ open, onClose, title, subtitle, children }: DrawerProps
       className="fixed inset-0 z-50 flex justify-end bg-slate-900/40"
       role="dialog"
       aria-modal="true"
-      aria-label={title}
+      aria-labelledby={titleId}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="w-full max-w-xl bg-white h-full border-l border-slate-200 shadow-xl flex flex-col">
+      <div
+        ref={panelRef}
+        tabIndex={-1}
+        className="w-full max-w-xl bg-white h-full border-l border-slate-200 shadow-xl flex flex-col focus:outline-none"
+      >
         <div className="flex items-start justify-between gap-4 px-6 py-4 border-b border-slate-200">
           <div className="min-w-0">
-            <h2 className="text-base font-semibold text-slate-900 truncate">{title}</h2>
-            {subtitle && <p className="text-xs text-slate-500 mt-0.5 truncate">{subtitle}</p>}
+            <h2 id={titleId} className="text-base font-semibold text-slate-900 truncate">
+              {title}
+            </h2>
+            {subtitle && <p className="text-xs text-slate-600 mt-0.5 truncate">{subtitle}</p>}
           </div>
           <IconButton label="Close panel" onClick={onClose} size="sm">
             <X className="w-4 h-4" />
